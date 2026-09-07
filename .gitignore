@@ -1,0 +1,20 @@
+# 🔴 私有設定：真實的分會名稱與 Google 檔案 ID。絕對不可進版控。
+config.json
+
+# OAuth 憑證與 token（正常放在 ~/.config/gdrive_api/，這裡再擋一次）
+credentials.json
+token.json
+client_secret*.json
+.env
+.env.*
+
+# 工具執行產物：輸出含會員姓名、email、檔案連結
+scratch/
+output/
+*.log
+
+# 系統與快取
+.DS_Store
+__pycache__/
+*.pyc
+.venv/

@@ -1,0 +1,19 @@
+#!/bin/sh
+# 公開 repo 的敏感內容閘門：掃 staged blob，命中就擋下 commit。
+#
+# 安裝（只對這個 repo 生效）：
+#     git config --local core.hooksPath .githooks
+#
+# 注意：
+#   - clone 不會自動啟用，接手的人要自己跑一次上面的指令。
+#   - `git commit --no-verify` 可以繞過本 hook，所以首次公開發布前
+#     仍須另外執行全量與歷史掃描，並人工逐檔確認。
+set -e
+
+if command -v python3 >/dev/null 2>&1; then
+    exec python3 "$(git rev-parse --show-toplevel)/tools/check_no_secrets.py"
+fi
+
+echo "找不到 python3，無法執行敏感內容掃描。" >&2
+echo "請安裝 python3，或確認後自行以 --no-verify 承擔風險。" >&2
+exit 2

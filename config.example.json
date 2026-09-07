@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "chapter_name": "<分會全名，例：BNI○○分會>",
+  "chapter_short": "<訊息標題用短名，例：BNI○○>",
+  "timezone": "Asia/Taipei",
+  "room_form_id": "<小房間預約表單的 Google 檔案 ID>",
+  "room_form_responder_url": "<小房間預約表單的填寫網址>",
+  "room_sheet_id": "<預約彙整試算表的 Google 檔案 ID>",
+  "guest_slides_file_id": "<來賓名單投影片的 Google 檔案 ID>",
+  "guest_slides_parent_folder_id": "<來賓名單投影片所在資料夾 ID（僅供人工定位）>"
+}
