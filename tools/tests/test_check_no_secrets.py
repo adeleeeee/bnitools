@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 SCANNER = REPO_ROOT / "tools" / "check_no_secrets.py"
@@ -203,6 +204,31 @@ class AllowlistTest(unittest.TestCase):
         with self.assertRaises(scanner.ScanFailure):
             scanner.load_allowlist(enabled=True, source="worktree")
 
+    def test_index_missing_allowlist_returns_empty(self):
+        """index 裡沒有白名單＝合理的首次使用狀態，沒有豁免（偏嚴）。"""
+        with mock.patch.object(scanner, "run_git", return_value="") as run:
+            self.assertEqual(scanner.load_allowlist(enabled=True, source="index"), set())
+            run.assert_called_once()  # 只做列舉，不去讀 blob
+
+    def test_index_git_failure_is_not_swallowed(self):
+        """Git 讀取故障不可被當成「缺檔」吞掉。"""
+        with mock.patch.object(
+            scanner, "run_git", side_effect=scanner.ScanFailure("模擬 git 故障")
+        ):
+            with self.assertRaises(scanner.ScanFailure):
+                scanner.load_allowlist(enabled=True, source="index")
+
+    def test_index_blob_read_failure_is_not_swallowed(self):
+        """列舉得到檔案、讀 blob 卻失敗 → 一樣要往上拋。"""
+        def fake(args, binary=False):
+            if args[0] == "ls-files":
+                return f"{scanner.ALLOWLIST_NAME}\0"
+            raise scanner.ScanFailure("模擬讀 blob 失敗")
+
+        with mock.patch.object(scanner, "run_git", side_effect=fake):
+            with self.assertRaises(scanner.ScanFailure):
+                scanner.load_allowlist(enabled=True, source="index")
+
 
 class ForbiddenNameTest(unittest.TestCase):
     def test_forbidden_names(self):
@@ -349,6 +375,21 @@ class GitIntegrationTest(unittest.TestCase):
         result = self.scan("--history", "HEAD", "--no-allowlist")
         self.assertEqual(result.returncode, 1)
         self.assertIn("commit-messages", result.stderr)
+
+
+class GitFailureExitCodeTest(unittest.TestCase):
+    def test_not_a_repo_exits_two(self):
+        """Git 操作失敗要以退出碼 2 收場（需人工審查），不是靜默通過。"""
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (Path(tmp) / "tools").mkdir()
+        shutil.copy(SCANNER, Path(tmp) / "tools" / "check_no_secrets.py")
+        result = subprocess.run(
+            [sys.executable, "tools/check_no_secrets.py", "--all-tracked"],
+            cwd=tmp, capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("人工審查", result.stderr)
 
 
 class RealRepoTest(unittest.TestCase):

@@ -158,11 +158,13 @@ def load_allowlist(enabled: bool, source: str = "index") -> set[str]:
     if not enabled:
         return set()
     if source == "index":
-        try:
-            raw = run_git(["show", f":{ALLOWLIST_NAME}"])
-        except ScanFailure:
-            return set()  # index 裡沒有白名單（例如尚未加入版控）
-        return _parse_allowlist(raw, "index")
+        # 先用「成功的列舉」確認檔案在不在 index，不要靠 git 的錯誤訊息猜。
+        # 缺檔＝合理的首次使用狀態（沒有豁免、偏嚴）；
+        # 列舉失敗或檔案存在卻讀不到，都是操作failure，必須往上拋。
+        listing = run_git(["ls-files", "-z", "--", ALLOWLIST_NAME])
+        if not [p for p in listing.split("\0") if p]:
+            return set()
+        return _parse_allowlist(run_git(["show", f":{ALLOWLIST_NAME}"]), "index")
     if source == "worktree":
         if not ALLOWLIST_FILE.exists():
             return set()

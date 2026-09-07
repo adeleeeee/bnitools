@@ -137,6 +137,18 @@ class ResolveOptionDateTest(unittest.TestCase):
             date(2031, 7, 29),
         )
 
+    def test_iso_today_accepted(self):
+        self.assertEqual(
+            room_dates.resolve_option_entry("2030-09-07", date(2030, 9, 7)),
+            date(2030, 9, 7),
+        )
+
+    def test_iso_yesterday_rejected(self):
+        """知道年份不等於那天還能預約：過期的完整日期必須中止。"""
+        with self.assertRaises(room_dates.AmbiguousDate) as ctx:
+            room_dates.resolve_option_entry("2030-09-06", date(2030, 9, 7))
+        self.assertIn("已經過去", str(ctx.exception))
+
     def test_iso_and_md_mix(self):
         self.assertEqual(
             room_dates.resolve_option_entry("9/30", date(2030, 9, 7)), date(2030, 9, 30)
@@ -267,6 +279,16 @@ class BuildSummaryTest(unittest.TestCase):
     def test_empty_available_is_allowed(self):
         s = self._summary(self._payload(available=[]))
         self.assertEqual(s["available"], [])
+
+    def test_expired_iso_date_aborts_whole_summary(self):
+        """過期的完整日期要讓整個流程停下來，不是被略過或列成可預約。"""
+        payload = self._payload(available=["2030-01-01"])
+        with self.assertRaises(room_dates.AmbiguousDate):
+            self._summary(payload)
+
+    def test_future_iso_date_passes_through_summary(self):
+        s = self._summary(self._payload(available=["2030-12-25"]))
+        self.assertEqual([r["display"] for r in s["available"]], ["12/25"])
 
 
 if __name__ == "__main__":

@@ -162,10 +162,21 @@ def resolve_option_date(md: str, today: date) -> date:
 
 
 def resolve_option_entry(value: str, today: date) -> date:
-    """表單選項可以是 `M/D`（依今天推年）或已人工確認的 `YYYY-MM-DD`。"""
+    """表單選項可以是 `M/D`（依今天推年）或已人工確認的 `YYYY-MM-DD`。
+
+    ⚠️ 知道年份不等於那天還能預約：完整日期同樣要驗證未過期，
+    否則人工確認「那是今年的過期選項」之後照著填完整日期，反而會產出錯誤的公告。
+    """
     text = value.strip()
     if _ISO_RE.match(text):
-        return date.fromisoformat(text)
+        explicit = date.fromisoformat(text)
+        if explicit < today:
+            raise AmbiguousDate(
+                f"可預約日期 {text} 已經過去（今天 {today.isoformat()}）："
+                f"明確知道年份不代表那天還能預約。這是已過期的表單選項，"
+                f"請從 available 移除，不要當成可預約日期。"
+            )
+        return explicit
     return resolve_option_date(text, today)
 
 

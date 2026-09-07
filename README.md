@@ -65,13 +65,20 @@ python3 tools/bni_config.py --flow bnippt
 
 ## 安裝 commit 前的敏感內容閘門
 
-**先確認你沒有已在使用的 hooks 設定**，這行會覆蓋掉它：
+**第一步：先檢查**，確認你沒有已在使用的 hooks 設定（包含從全域繼承來的）：
 
 ```bash
-git config --local --get core.hooksPath   # 有輸出代表已經設過，先確認要不要保留
-ls .git/hooks                             # 也看一下有沒有自己放的 hook
+git config --show-origin --get core.hooksPath   # 看有效設定與它來自哪個檔案
+ls .git/hooks                                   # 也看一下有沒有自己放的 hook
+```
+
+**第二步：確認過沒問題再安裝**（只對這個 repo 生效，不動你的全域設定）：
+
+```bash
 git config --local core.hooksPath .githooks
 ```
+
+（刻意分成兩步，避免整段貼上直接覆蓋掉既有設定。）
 
 之後每次 commit 會自動掃 staged 內容，抓到真實 Google 網址、檔案 ID、email
 或憑證結構就擋下來。
