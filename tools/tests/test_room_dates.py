@@ -34,6 +34,12 @@ class ParseTimestampTest(unittest.TestCase):
             datetime(2030, 5, 17, 13, 20, 7),
         )
 
+    def test_hour_out_of_12h_range_rejected(self):
+        """12 小時制不該接受 13 或 0，那是壞資料。"""
+        for bad in ("2030/7/6 上午 13:00:00", "2030/7/6 下午 13:00:00", "2030/7/6 上午 0:30:00"):
+            with self.assertRaises(ValueError, msg=bad):
+                room_dates.parse_sheet_timestamp(bad)
+
     def test_noon_is_twelve(self):
         """下午 12:30 = 12:30，不是 24:30。"""
         self.assertEqual(
@@ -92,6 +98,16 @@ class ResolveBookingDateTest(unittest.TestCase):
             room_dates.resolve_booking_date("9/3", ts),
         )
 
+    def test_leap_day_skips_non_leap_years(self):
+        """2/29 要跳過平年找到下一個閏年，不是直接報錯。"""
+        ts = datetime(2027, 12, 1, 9, 0, 0)
+        self.assertEqual(room_dates.resolve_booking_date("2/29", ts), date(2028, 2, 29))
+
+    def test_never_valid_date_reports(self):
+        """4/31 不存在於任何一年，必須明確報錯，不可被吞掉。"""
+        with self.assertRaises(room_dates.AmbiguousDate):
+            room_dates.resolve_booking_date("4/31", datetime(2030, 1, 1, 9, 0, 0))
+
 
 class ResolveOptionDateTest(unittest.TestCase):
     def test_future_is_this_year(self):
@@ -104,19 +120,27 @@ class ResolveOptionDateTest(unittest.TestCase):
             room_dates.resolve_option_date("9/7", date(2030, 9, 7)), date(2030, 9, 7)
         )
 
-    def test_recently_past_is_ambiguous(self):
-        """剛過去幾天的選項不確定是過期殘留還是明年，必須報出來。"""
-        with self.assertRaises(room_dates.AmbiguousDate):
-            room_dates.resolve_option_date("9/1", date(2030, 9, 7))
-
-    def test_long_past_rolls_to_next_year(self):
-        self.assertEqual(
-            room_dates.resolve_option_date("1/8", date(2030, 9, 7)), date(2031, 1, 8)
-        )
+    def test_any_past_date_is_ambiguous(self):
+        """今年已過的選項一律報歧義：剛過去和過去很久都分不出是殘留還是明年。"""
+        for md in ("9/1", "7/29", "1/8"):
+            with self.assertRaises(room_dates.AmbiguousDate, msg=md):
+                room_dates.resolve_option_date(md, date(2030, 9, 7))
 
     def test_invalid_calendar_date_reports(self):
         with self.assertRaises(room_dates.AmbiguousDate):
             room_dates.resolve_option_date("2/30", date(2030, 1, 1))
+
+    def test_explicit_iso_date_accepted(self):
+        """人工確認過年份後，用完整日期繞過歧義。"""
+        self.assertEqual(
+            room_dates.resolve_option_entry("2031-07-29", date(2030, 9, 7)),
+            date(2031, 7, 29),
+        )
+
+    def test_iso_and_md_mix(self):
+        self.assertEqual(
+            room_dates.resolve_option_entry("9/30", date(2030, 9, 7)), date(2030, 9, 30)
+        )
 
 
 class ThisWednesdayTest(unittest.TestCase):

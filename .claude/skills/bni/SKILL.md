@@ -68,7 +68,8 @@ python3 tools/bni_config.py --flow bni-local     # 雲端用 --flow bni-cloud
 | 為什麼不同 | — | 雲端沒有 `~/.config/gdrive_api/` 的 token，gforms.py 一定失敗 |
 | 試算表 | Drive MCP | Drive MCP（routine 要掛 Google-Drive 連接器） |
 
-兩種取法實測結果一致。
+兩種取法**在本機比對過結果一致**（同一天分別用 API 與 WebFetch 取得相同選項）。
+⚠️ 雲端沙箱內尚未實測，本機一致不等於雲端已驗證。
 
 ## 流程
 
@@ -114,7 +115,17 @@ python3 tools/bni_config.py --flow bni-local     # 雲端用 --flow bni-cloud
 4. **交叉驗證**：模組回傳的 `warnings.clashes` 應為空。
    有值＝有人約了但表單沒關掉（或反之）→ **在訊息外面標給使用者看，不要吞掉**，
    訊息照發但註明哪一天有疑慮。`warnings.duplicated` 同理。
-   若模組報 `AmbiguousDate`（表單選項年份無法確定），停下來問使用者，不要自己猜。
+
+   ### 🔴 遇到 `AmbiguousDate` 時的優先順序（兩種環境都適用）
+
+   表單選項只有 `M/D`、沒有時間戳，今年已過的日期無法判斷是「過期殘留」還是「明年場次」，
+   模組會拋 `AmbiguousDate`。此時：
+
+   - **一律停止，不產出訊息。** 這條優先於「雲端要直接輸出」。
+   - 本機：把有問題的日期列給使用者，請他確認年份；確認後在 payload 的 `available`
+     把該筆改成完整日期 `YYYY-MM-DD`，再跑一次。
+   - 雲端：**只輸出失敗原因與需要確認的日期**，不要猜年份、不要略過該筆、
+     也不要產出「正常」的預約公告。等使用者下次手動處理。
 
 5. **輸出 LINE 訊息**：純文字 code block（使用者要直接複製貼上，
    **不要套引言 `>`、不要加 markdown 粗體**）。
@@ -159,9 +170,25 @@ routine 跑在 Anthropic 雲端沙箱，clone 本 repo，**碰不到本機檔案
 
 - 流程 1 走 WebFetch，不要碰 gforms.py。
 - routine 必須掛 **Google-Drive 連接器**才讀得到彙整試算表。
-- `config.json` 不在 repo 裡（被 .gitignore 擋掉），所以 routine 的設定放在 prompt 的設定區塊；
-  照 `config.example.json` 的 schema 寫成 JSON 存成暫存檔，再用
-  `--config <暫存檔>` 傳給 `bni_config.py` / `room_dates.py`。
+- `config.json` 不在 repo 裡（被 .gitignore 擋掉），所以 routine 的設定放在 prompt 的設定區塊。
+  完整做法：
+
+  ```bash
+  # 1) 把 prompt 裡的設定區塊原樣存成暫存檔（不要存進 repo 根目錄）
+  mkdir -p /tmp/bni && cat > /tmp/bni/config.json <<'JSON'
+  { …照 config.example.json 的 schema，填 prompt 給的值… }
+  JSON
+
+  # 2) 驗證設定（缺欄位會直接告訴你缺哪個）
+  python3 tools/bni_config.py --flow bni-cloud --config /tmp/bni/config.json
+
+  # 3) 算日期
+  python3 tools/room_dates.py --flow bni-cloud --config /tmp/bni/config.json \
+      --input /tmp/bni/payload.json
+  ```
+
 - 兩個設定來源互斥：雲端環境不會有 repo config.json，若兩者同時存在，工具會直接報錯。
+  **暫存檔放 repo 外面**（如 `/tmp/bni/`），避免不小心被當成 repo 設定或被 commit。
 - 雲端沒有互動對象：不要問問題、不要等確認，直接輸出訊息＋警示。
+  **唯一例外是上面的 `AmbiguousDate`：那種情況要停止並只回報原因。**
 - ⚠️ bnippt **不能**在雲端跑（需要本機 OAuth），不要把投影片流程排進 routine。

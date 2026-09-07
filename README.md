@@ -65,7 +65,11 @@ python3 tools/bni_config.py --flow bnippt
 
 ## 安裝 commit 前的敏感內容閘門
 
+**先確認你沒有已在使用的 hooks 設定**，這行會覆蓋掉它：
+
 ```bash
+git config --local --get core.hooksPath   # 有輸出代表已經設過，先確認要不要保留
+ls .git/hooks                             # 也看一下有沒有自己放的 hook
 git config --local core.hooksPath .githooks
 ```
 
@@ -76,10 +80,14 @@ git config --local core.hooksPath .githooks
 - `git commit --no-verify` 可以繞過，所以**首次公開發布前**另外跑：
   ```bash
   python3 tools/check_no_secrets.py --all-tracked
-  python3 tools/check_no_secrets.py --history HEAD
+  python3 tools/check_no_secrets.py --history <每一個要發布的 branch 或 tag>
   ```
-  並**逐檔人工確認**，同時確認要發布的 refs 範圍、以及 commit 作者 email
-  是不是你有意公開的身分。掃描通過不等於證明乾淨。
+  `--history` **一次只掃你指定的那一個 ref**，不會順手帶出其他 refs。
+  要發布多個 branch／tag 就每個各跑一次，並用明確的 refspec 推送。
+  另須**逐檔人工確認**，以及確認 commit 作者 email 是不是你有意公開的身分。
+  掃描通過不等於證明乾淨。
+- 提示（advisory）是**啟發式**的：只提示同時含數字與大寫的長字串，
+  全小寫或純數字的 ID 不會出現在提示裡。它不負責補阻擋規則的漏洞。
 - 誤判時在 `.secretscan-allow.json` 加入**精確字串＋理由**。禁止整檔豁免，
   也不得把真實 ID 寫進這個公開的白名單。
 
@@ -120,6 +128,9 @@ uv run --with google-auth python tools/tests/test_gdrive_update.py
 分會流程不同的話，改 SKILL.md 裡的規則即可，但表格形狀與題目名稱可能要一起調整。
 
 ## 雲端排程
+
+> ⚠️ **狀態：尚未驗證。** 以下是設計，還沒有在真實的雲端 routine 上跑過。
+> 目前所有測試與流程驗收都是在本機完成的，本機成功不代表雲端可行。
 
 小房間訊息可以掛成 Claude 的雲端排程 routine，每週自動跑一次，本機不用開著。
 routine 在雲端沙箱 clone 這個 repo，**碰不到你的本機檔案與 OAuth token**，所以：

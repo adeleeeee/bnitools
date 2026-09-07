@@ -67,6 +67,43 @@ class BlockingRuleTest(unittest.TestCase):
         self.assertIn("config-value", rules_hit('"chapter_name": "某某分會"'))
 
 
+class RegressionTest(unittest.TestCase):
+    """Codex 複審找出的漏擋（第 51 則）。合成值同時驗含大寫數字與全小寫兩種。"""
+
+    MIXED = "1EXAMPLEmixedCase00000000"
+    LOWER = "1example-lowercase-000000"
+
+    def test_root_path_folder_url(self):
+        """根路徑的 /folders/ 也要抓到，不是只有 /drive/folders/。"""
+        for ident in (self.MIXED, self.LOWER):
+            self.assertIn(
+                "google-folder-url",
+                rules_hit(f"https://drive.google.com/folders/{ident}"), ident,
+            )
+
+    def test_root_path_doc_url(self):
+        for ident in (self.MIXED, self.LOWER):
+            self.assertIn(
+                "google-doc-url",
+                rules_hit(f"https://docs.google.com/d/{ident}"), ident,
+            )
+
+    def test_single_quoted_cli_id(self):
+        for ident in (self.MIXED, self.LOWER):
+            self.assertIn("cli-id-literal", rules_hit(f"--file-id '{ident}'"), ident)
+            self.assertIn("cli-id-literal", rules_hit(f'--form-id "{ident}"'), ident)
+
+    def test_multiline_json_config_value(self):
+        """合法 JSON 可以把鍵與值分行，逐行掃會漏掉。"""
+        text = '{\n  "room_sheet_id":\n    "actualvalue123"\n}'
+        self.assertIn("config-value", rules_hit(text))
+
+    def test_multiline_match_reports_starting_line(self):
+        text = 'line1\nline2\n"room_sheet_id":\n  "actualvalue123"\n'
+        blocking, _ = scanner.scan_text("f.json", text, allowed=set())
+        self.assertTrue(any(item.startswith("f.json:3:") for item in blocking), blocking)
+
+
 class NoFalsePositiveTest(unittest.TestCase):
     def test_placeholders_pass(self):
         text = (
@@ -138,17 +175,33 @@ class AllowlistTest(unittest.TestCase):
         blocking, _ = scanner.scan_text("t.txt", FAKE_FORM_URL, allowed=set())
         self.assertTrue(blocking)
 
+    def _with_allowlist(self, content: str):
+        tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        path = Path(tmp) / ".secretscan-allow.json"
+        path.write_text(content, encoding="utf-8")
+        orig = scanner.ALLOWLIST_FILE
+        scanner.ALLOWLIST_FILE = path
+        self.addCleanup(lambda: setattr(scanner, "ALLOWLIST_FILE", orig))
+
     def test_allowlist_entry_requires_reason(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            bad = Path(tmp) / ".secretscan-allow.json"
-            bad.write_text('{"allow": [{"value": "x"}]}', encoding="utf-8")
-            orig = scanner.ALLOWLIST_FILE
-            scanner.ALLOWLIST_FILE = bad
-            try:
-                with self.assertRaises(scanner.ScanFailure):
-                    scanner.load_allowlist(enabled=True)
-            finally:
-                scanner.ALLOWLIST_FILE = orig
+        self._with_allowlist('{"allow": [{"value": "SENTINELvalue123"}]}')
+        with self.assertRaises(scanner.ScanFailure) as ctx:
+            scanner.load_allowlist(enabled=True, source="worktree")
+        # 錯誤訊息只提序號與欄位名，不得回顯 value
+        self.assertNotIn("SENTINELvalue123", str(ctx.exception))
+        self.assertIn("第 1 項", str(ctx.exception))
+
+    def test_malformed_json_is_scan_failure_not_traceback(self):
+        self._with_allowlist('{"allow": [SENTINELvalue123]}')
+        with self.assertRaises(scanner.ScanFailure) as ctx:
+            scanner.load_allowlist(enabled=True, source="worktree")
+        self.assertNotIn("SENTINELvalue123", str(ctx.exception))
+
+    def test_bad_structure_is_scan_failure(self):
+        self._with_allowlist('{"nope": []}')
+        with self.assertRaises(scanner.ScanFailure):
+            scanner.load_allowlist(enabled=True, source="worktree")
 
 
 class ForbiddenNameTest(unittest.TestCase):
@@ -247,6 +300,47 @@ class GitIntegrationTest(unittest.TestCase):
         history = self.scan("--history", "HEAD", "--no-allowlist")
         self.assertEqual(history.returncode, 1, history.stdout + history.stderr)
         self.assertIn("google-doc-url", history.stderr)
+
+    def test_worktree_allowlist_cannot_exempt_staged_content(self):
+        """只在工作樹加豁免、index 沒加 → staged 內容仍必須被擋。"""
+        self.write("notes.md", f"連結：{FAKE_FORM_URL}\n")
+        self.write(".secretscan-allow.json", '{"allow": []}')
+        self.git("add", "notes.md", ".secretscan-allow.json")
+        # commit 後才在工作樹偷偷加豁免，且不 stage
+        self.git("commit", "-qm", "init")
+        self.write("notes.md", f"連結：{FAKE_FORM_URL}\n再一次\n")
+        self.git("add", "notes.md")
+        self.write(
+            ".secretscan-allow.json",
+            '{"allow": [{"value": "https://docs.google.com/forms/d/e/'
+            '1EXAMPLEexampleEXAMPLE00000", "reason": "偷加的豁免"}]}',
+        )
+        result = self.scan()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("google-doc-url", result.stderr)
+
+    def test_index_allowlist_does_exempt(self):
+        """同一份豁免有進 index 時就會生效，證明差別在版本來源而非規則。"""
+        self.write("notes.md", f"連結：{FAKE_FORM_URL}\n")
+        self.write(
+            ".secretscan-allow.json",
+            '{"allow": [{"value": "https://docs.google.com/forms/d/e/'
+            '1EXAMPLEexampleEXAMPLE00000", "reason": "測試用合成值"}]}',
+        )
+        self.git("add", "notes.md", ".secretscan-allow.json")
+        result = self.scan()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_history_forbidden_path_under_renamed_blob(self):
+        """同一內容曾以 config.json 存在、後來改名 → 歷史路徑檢查仍要抓到。"""
+        self.write("config.json", "同樣的內容\n")
+        self.git("add", "-f", "config.json")
+        self.git("commit", "-qm", "oops")
+        self.git("mv", "config.json", "settings.txt")
+        self.git("commit", "-qm", "rename")
+        result = self.scan("--history", "HEAD")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("forbidden-filename-in-history", result.stderr)
 
     def test_history_mode_scans_commit_messages(self):
         self.write("notes.md", "乾淨\n")

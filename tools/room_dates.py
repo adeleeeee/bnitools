@@ -21,6 +21,10 @@ payload.json 形狀：
       "available": ["9/30", "11/18"]
     }
 
+`available` 的元素可以是表單原樣的 `M/D`，也可以是 `YYYY-MM-DD`。
+表單選項沒有時間戳可推年份，**今年已過的 M/D 一律回報歧義**（可能是過期殘留、
+也可能是明年場次），人工確認後改填完整日期即可。
+
 `bookings` 與 `available` **都必須存在**。抓取失敗時請中止流程，
 不要傳空陣列 —— 空陣列代表「確實查到沒有」，不是「查不到」。
 """
@@ -36,7 +40,6 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 WEDNESDAY = 2  # date.weekday()：週一=0
-DEFAULT_STALE_DAYS = 30
 DEFAULT_LATER_LIMIT = 4
 
 # 試算表時間戳：2026/7/6 上午 11:08:53
@@ -48,6 +51,8 @@ _TS_24H_RE = re.compile(
     r"^(\d{4})[/-](\d{1,2})[/-](\d{1,2})[ T](\d{1,2}):(\d{2}):(\d{2})$"
 )
 _MD_RE = re.compile(r"^\s*(\d{1,2})\s*/\s*(\d{1,2})\s*$")
+# 已人工確認年份的完整日期
+_ISO_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class AmbiguousDate(ValueError):
@@ -75,6 +80,9 @@ def parse_sheet_timestamp(text: str) -> datetime:
     if m:
         year, month, day, meridiem, hour, minute, second = m.groups()
         hour = int(hour)
+        # 12 小時制先驗範圍再換算：上午 13:00 是壞資料，不能默默當成 13 時
+        if not 1 <= hour <= 12:
+            raise ValueError(f"12 小時制的時鐘數必須是 1–12，收到 {hour}：{text!r}")
         if meridiem == "下午" and hour != 12:
             hour += 12
         elif meridiem == "上午" and hour == 12:
@@ -100,45 +108,65 @@ def parse_md(text: str) -> tuple[int, int]:
     return month, day
 
 
-def _make_date(year: int, month: int, day: int, context: str) -> date:
+def _try_date(year: int, month: int, day: int) -> date | None:
+    """該年沒有這個日期（如平年 2/29）就回 None，讓呼叫端試下一個候選年。"""
     try:
         return date(year, month, day)
-    except ValueError as exc:
-        raise AmbiguousDate(f"{context}：{year}/{month}/{day} 不是合法日期（{exc}）") from exc
+    except ValueError:
+        return None
 
 
 def resolve_booking_date(md: str, timestamp: datetime) -> date:
     """試算表的預約日期只有 M/D。
 
     年份＝讓該日期落在「填表當天或之後」且最接近填表日的那一年。
+    候選年裡若某一年沒有這個日期（2/29），跳過該年繼續試下一年；
+    每一年都不合法（4/31）才報錯。
     """
     month, day = parse_md(md)
     submitted = timestamp.date()
-    for year in (submitted.year, submitted.year + 1):
-        candidate = _make_date(year, month, day, f"預約日期 {md}")
+    # 2/29 最多要等 8 年才輪到閏年，候選年給足
+    for year in range(submitted.year, submitted.year + 9):
+        candidate = _try_date(year, month, day)
+        if candidate is None:
+            continue
         if candidate >= submitted:
             return candidate
-    raise AmbiguousDate(f"預約日期 {md} 無法依填表時間 {submitted} 推定年份")
+    raise AmbiguousDate(
+        f"預約日期 {md} 無法依填表時間 {submitted} 推定年份"
+        f"（可能不是合法日期，例如 4/31）"
+    )
 
 
-def resolve_option_date(md: str, today: date, stale_days: int = DEFAULT_STALE_DAYS) -> date:
-    """表單選項的日期也只有 M/D，而且**沒有時間戳可當基準**。
+def resolve_option_date(md: str, today: date) -> date:
+    """表單選項的日期只有 M/D，而且**沒有時間戳可當基準**。
 
-    只能以「今天」推年：落在今天或之後就是今年；已經過去的則有歧義 ——
-    可能是表單還沒移除的過期選項，也可能是明年的場次。
-    近期剛過去（stale_days 內）一律報出來要求人工確認，不默默推到下一年。
+    只能以「今天」推年：落在今天或之後就是今年。
+    **今年已經過去的一律回報歧義** —— 可能是表單還沒移除的過期選項，
+    也可能是明年的場次，光靠「過了幾天」分不出來，不能默默推到下一年。
+
+    要處理這種日期，請在 payload 的 `available` 直接給完整日期（`YYYY-MM-DD`），
+    代表已經人工確認過年份。
     """
     month, day = parse_md(md)
-    candidate = _make_date(today.year, month, day, f"可預約日期 {md}")
+    candidate = _try_date(today.year, month, day)
+    if candidate is None:
+        raise AmbiguousDate(f"可預約日期 {md} 在 {today.year} 年不是合法日期")
     if candidate >= today:
         return candidate
-    days_past = (today - candidate).days
-    if days_past <= stale_days:
-        raise AmbiguousDate(
-            f"可預約日期 {md} 在今年已過 {days_past} 天：可能是表單未移除的過期選項，"
-            f"也可能是明年的場次。請人工確認後再產出訊息。"
-        )
-    return _make_date(today.year + 1, month, day, f"可預約日期 {md}")
+    raise AmbiguousDate(
+        f"可預約日期 {md} 在今年（{candidate.isoformat()}）已經過去："
+        f"可能是表單未移除的過期選項，也可能是明年的場次，無法自行判斷。"
+        f"請人工確認後，在 available 改填完整日期（YYYY-MM-DD）再跑一次。"
+    )
+
+
+def resolve_option_entry(value: str, today: date) -> date:
+    """表單選項可以是 `M/D`（依今天推年）或已人工確認的 `YYYY-MM-DD`。"""
+    text = value.strip()
+    if _ISO_RE.match(text):
+        return date.fromisoformat(text)
+    return resolve_option_date(text, today)
 
 
 def this_wednesday(today: date) -> date:
@@ -171,7 +199,6 @@ def build_summary(
     timezone: str,
     today: date | None = None,
     later_limit: int = DEFAULT_LATER_LIMIT,
-    stale_days: int = DEFAULT_STALE_DAYS,
 ) -> dict:
     """把原始資料整理成訊息需要的結構。"""
     for key in ("bookings", "available"):
@@ -207,7 +234,7 @@ def build_summary(
     wednesday = this_wednesday(today)
     upcoming = sorted(chosen)
 
-    available = [resolve_option_date(x, today, stale_days) for x in payload["available"]]
+    available = [resolve_option_entry(x, today) for x in payload["available"]]
     clashes = sorted(set(available) & set(chosen))
 
     def as_row(booking: Booking) -> dict:
