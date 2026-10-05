@@ -26,6 +26,9 @@ Claude 的 Google Drive 連接器只能建新檔或改中繼資料，無法覆�
     # 同上但保留這次為永久版本（Drive「管理版本」看得到、不會被自動清）
     $R update --file-id <FILE_ID> --local <path> --keep-revision
 
+    # 在 Drive 上另存一份副本（新 fileId，原檔不受影響），預設放在同一個資料夾
+    $R copy --file-id <FILE_ID> --name "原檔名_20260101備份"
+
   <FILE_ID> 從私有設定 config.json 取得（如 guest_slides_file_id），不要寫死在文件或程式裡。
 
 注意：
@@ -160,6 +163,17 @@ def cmd_update(args):
     print(f"開檔：https://drive.google.com/file/d/{updated['id']}/view")
 
 
+def cmd_copy(args):
+    service = get_service()
+    before = service.files().get(fileId=args.file_id, fields="id,name").execute()
+    body = {"name": args.name}
+    copied = service.files().copy(
+        fileId=args.file_id, body=body, fields="id,name,parents"
+    ).execute()
+    print(f"✅ 已從「{before['name']}」另存副本：「{copied['name']}」")
+    print(f"新檔連結：https://drive.google.com/file/d/{copied['id']}/view")
+
+
 def main():
     p = argparse.ArgumentParser(description="覆蓋既有 Google Drive 檔內容（連結不變）")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -176,6 +190,11 @@ def main():
     up.add_argument("--local", required=True, help="本機檔路徑")
     up.add_argument("--keep-revision", action="store_true", help="保留此次為永久版本")
     up.set_defaults(func=cmd_update)
+
+    cp = sub.add_parser("copy", help="在 Drive 上另存一份副本（新 fileId，原檔不受影響）")
+    cp.add_argument("--file-id", required=True, help="要複製的 Drive fileId")
+    cp.add_argument("--name", required=True, help="副本的檔名")
+    cp.set_defaults(func=cmd_copy)
 
     args = p.parse_args()
     args.func(args)

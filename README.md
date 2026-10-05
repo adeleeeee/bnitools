@@ -1,14 +1,16 @@
 # bnitools
 
-BNI 分會兩件每週雜務的自動化：
+BNI 分會幾件例行雜務的自動化：
 
-| 工作 | 做什麼 |
-|---|---|
-| **小房間預約狀況** | 從預約表單抓「還能約哪幾天」、從彙整試算表抓「誰約了」，組成可直接貼 LINE 群組的訊息 |
-| **來賓名單投影片** | 把本週來賓（姓名／專業別／引薦人）填進投影片範本，覆蓋回 Google Drive 原檔（連結不變） |
+| 工作 | 頻率 | 做什麼 |
+|---|---|---|
+| **小房間預約狀況** | 每週 | 從預約表單抓「還能約哪幾天」、從彙整試算表抓「誰約了」，組成可直接貼 LINE 群組的訊息 |
+| **來賓名單投影片** | 每週 | 把本週來賓（姓名／專業別／引薦人）填進投影片範本，覆蓋回 Google Drive 原檔（連結不變） |
+| **來賓簽到表** | 每週 | 同一份來賓名單：更新簽到表 docx 的場次日期＋姓名/介紹人欄，覆蓋回原檔（連結不變） |
+| **會員離會同步更新** | 不定期 | 從「會員簽到表」(docx) 與「會員名單」(xlsx) 同步刪除離會會員；docx 直接覆蓋，xlsx 用新分頁保留舊版本；兩邊日期都改成下一個最近的星期三 |
 
-兩件事都是給 [Claude Code](https://claude.com/claude-code) 用的**專案 skill**：
-在這個資料夾裡開 Claude Code，說「本週小房間狀態」或「本週的來賓」即可。
+這些都是給 [Claude Code](https://claude.com/claude-code) 用的**專案 skill**：
+在這個資料夾裡開 Claude Code，說「本週小房間狀態」「本週的來賓」或「XX 號離會」即可。
 
 ---
 
@@ -40,12 +42,16 @@ cp config.example.json config.json
 | `room_sheet_id` | 預約彙整試算表的 Google 檔案 ID |
 | `guest_slides_file_id` | 來賓名單投影片的 Google 檔案 ID |
 | `guest_slides_parent_folder_id` | 投影片所在資料夾 ID（僅供人工定位） |
+| `signin_sheet_file_id` | 來賓簽到表 docx 的 Google 檔案 ID |
+| `member_roster_doc_id` | 列印用會員表 docx 的 Google 檔案 ID |
+| `member_roster_sheet_id` | 會員名單 xlsx 的 Google 檔案 ID |
 
 檢查設定是否齊全（只印欄位名，不回顯值）：
 
 ```bash
 python3 tools/bni_config.py --flow bni-local
 python3 tools/bni_config.py --flow bnippt
+python3 tools/bni_config.py --flow bnimembers
 ```
 
 缺欄位、空白、或還是佔位符，它會直接停下來告訴你缺哪一個 —— 不會猜、不會用空值硬跑。
@@ -103,7 +109,7 @@ git config --local core.hooksPath .githooks
 | 檔案 | 用途 |
 |---|---|
 | `tools/gforms.py` | 唯讀讀 Google 表單的題目、選項、回覆 |
-| `tools/gdrive_update.py` | 就地覆蓋既有 Drive 檔內容（fileId／分享連結不變） |
+| `tools/gdrive_update.py` | 下載／就地覆蓋既有 Drive 檔內容／另存副本（fileId／分享連結不變） |
 | `tools/bni_config.py` | 私有設定的載入與驗證 |
 | `tools/room_dates.py` | 小房間預約的日期計算（skill 與測試共用同一份邏輯） |
 | `tools/check_no_secrets.py` | 敏感內容掃描 |
@@ -130,7 +136,8 @@ uv run --with google-auth python tools/tests/test_gdrive_update.py
 - 預約表單有「編號與姓名／預約日期／組別或PT／是否需要使用投影機？」這幾題，
   且「預約日期」是選擇題
 - 表單掛有 Apps Script，會自動移除已被預約與已過期的日期選項
-- 投影片範本每頁一個 4 列 × 6 欄的表格，每頁放 4 位來賓
+- 投影片範本每頁一個 6 欄的表格；分頁規則為一頁最多 5 位、貪婪填（列數隨人數調整）
+- 簽到表 docx 是「標題段落含 `日期：YYYY.MM.DD` ＋ 一個 17 列 × 5 欄的表格（姓名/介紹人在 col1/col2）」
 
 分會流程不同的話，改 SKILL.md 裡的規則即可，但表格形狀與題目名稱可能要一起調整。
 
@@ -145,12 +152,21 @@ routine 在雲端沙箱 clone 這個 repo，**碰不到你的本機檔案與 OAu
 - 可預約日期改用 WebFetch 讀表單填寫網址，不走 `gforms.py`
 - 設定放在 routine 的 prompt 裡（同一份 schema），不從 repo 讀
 - routine 要掛 Google-Drive 連接器才讀得到彙整試算表
-- **來賓投影片不能在雲端跑**（需要本機 OAuth）
+- **來賓投影片與簽到表不能在雲端跑**（需要本機 OAuth）
+
+## 分組報告順序輪替（Google Apps Script，全自動）
+
+> ✅ **狀態：2026-09-18 上線，每週二自動執行，已確認自動排程正常運作。**
+> 重新部署時仍建議先用程式碼裡的 `DRY_RUN=true` 測過再正式上線。
+
+會員名單 xlsx 現用分頁裡，會員依分類分成好幾組，每次會議後報告順序要整體輪替一次
+（第一組排到最後，其餘往前一位）。這件事跟「刪離會會員」（`bnimembers` skill）是
+獨立的、每週都要做的固定規則，不需要人判斷，所以改用 **Google Apps Script 排程**
+做，不靠 Claude Code 也不靠本機——程式碼在 `apps_script/rotate_category_order.gs`，
+部署步驟寫在該檔案開頭的註解。檔案本身維持 `.xlsx` 格式不變（腳本執行時暫時轉成
+Google Sheet 編輯，編輯完轉回 xlsx 覆蓋回原檔，暫存副本用完即刪）。
 
 ## 交接給下一位
 
 clone 或下載這個 repo → 填自己的 `config.json` → 用自己的 Google 授權。
 前一位使用者的 `config.json` 未進版控，不會跟著過來，也不會自動備份。
-
-若你以前曾把同名的 `bni` / `bnippt` skill 安裝到全域（`~/.claude/skills/`），
-請確認那份是否為不同版本，避免兩份規則同時存在。

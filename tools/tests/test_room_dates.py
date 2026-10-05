@@ -109,50 +109,67 @@ class ResolveBookingDateTest(unittest.TestCase):
             room_dates.resolve_booking_date("4/31", datetime(2030, 1, 1, 9, 0, 0))
 
 
-class ResolveOptionDateTest(unittest.TestCase):
+class ResolveAvailableTest(unittest.TestCase):
+    TODAY = date(2030, 9, 7)
+
+    def _resolve(self, values, today=None):
+        return room_dates.resolve_available(values, today or self.TODAY)
+
     def test_future_is_this_year(self):
-        self.assertEqual(
-            room_dates.resolve_option_date("9/30", date(2030, 9, 7)), date(2030, 9, 30)
-        )
+        self.assertEqual(self._resolve(["9/30"]), [date(2030, 9, 30)])
 
     def test_today_counts_as_available(self):
+        self.assertEqual(self._resolve(["9/7"]), [date(2030, 9, 7)])
+
+    def test_crosses_year_by_order(self):
+        """表單依時間往下排：12/30 之後的 1/13 就是明年。"""
         self.assertEqual(
-            room_dates.resolve_option_date("9/7", date(2030, 9, 7)), date(2030, 9, 7)
+            self._resolve(["12/30", "1/13", "1/20"]),
+            [date(2030, 12, 30), date(2031, 1, 13), date(2031, 1, 20)],
         )
 
-    def test_any_past_date_is_ambiguous(self):
-        """今年已過的選項一律報歧義：剛過去和過去很久都分不出是殘留還是明年。"""
-        for md in ("9/1", "7/29", "1/8"):
+    def test_first_option_next_year_is_rejected(self):
+        """第一個選項就已過去＝過期選項沒被清掉，不能自己推到明年。"""
+        for md in ("9/1", "1/8"):
             with self.assertRaises(room_dates.AmbiguousDate, msg=md):
-                room_dates.resolve_option_date(md, date(2030, 9, 7))
+                self._resolve([md, "9/30"])
+
+    def test_out_of_order_beyond_window_rejected(self):
+        """12/10 → 1/13 → 12/30：12/30 會被推到一年後，視為順序錯亂。"""
+        with self.assertRaises(room_dates.AmbiguousDate) as ctx:
+            self._resolve(["12/10", "1/13", "12/30"], today=date(2030, 12, 1))
+        self.assertIn("沒有照時間排列", str(ctx.exception))
+
+    def test_duplicate_option_rejected(self):
+        with self.assertRaises(ValueError):
+            self._resolve(["9/30", "09/30"])
+
+    def test_leap_day_rolls_forward(self):
+        """前一個是 2031 年的日期，2/29 要落在下一個合法年份內且不回頭。"""
+        self.assertEqual(
+            self._resolve(["12/30", "2/29"], today=date(2031, 12, 1)),
+            [date(2031, 12, 30), date(2032, 2, 29)],
+        )
 
     def test_invalid_calendar_date_reports(self):
         with self.assertRaises(room_dates.AmbiguousDate):
-            room_dates.resolve_option_date("2/30", date(2030, 1, 1))
+            self._resolve(["2/30"], today=date(2030, 1, 1))
 
     def test_explicit_iso_date_accepted(self):
-        """人工確認過年份後，用完整日期繞過歧義。"""
+        """完整日期直接採用，並當成下一個 M/D 的基準。"""
         self.assertEqual(
-            room_dates.resolve_option_entry("2031-07-29", date(2030, 9, 7)),
-            date(2031, 7, 29),
+            self._resolve(["2031-07-29", "8/5"]),
+            [date(2031, 7, 29), date(2031, 8, 5)],
         )
 
     def test_iso_today_accepted(self):
-        self.assertEqual(
-            room_dates.resolve_option_entry("2030-09-07", date(2030, 9, 7)),
-            date(2030, 9, 7),
-        )
+        self.assertEqual(self._resolve(["2030-09-07"]), [date(2030, 9, 7)])
 
     def test_iso_yesterday_rejected(self):
         """知道年份不等於那天還能預約：過期的完整日期必須中止。"""
         with self.assertRaises(room_dates.AmbiguousDate) as ctx:
-            room_dates.resolve_option_entry("2030-09-06", date(2030, 9, 7))
+            self._resolve(["2030-09-06"])
         self.assertIn("已經過去", str(ctx.exception))
-
-    def test_iso_and_md_mix(self):
-        self.assertEqual(
-            room_dates.resolve_option_entry("9/30", date(2030, 9, 7)), date(2030, 9, 30)
-        )
 
 
 class ThisWednesdayTest(unittest.TestCase):
@@ -285,6 +302,12 @@ class BuildSummaryTest(unittest.TestCase):
         payload = self._payload(available=["2030-01-01"])
         with self.assertRaises(room_dates.AmbiguousDate):
             self._summary(payload)
+
+    def test_year_rollover_through_summary(self):
+        s = self._summary(self._payload(available=["12/30", "1/13"]))
+        self.assertEqual(
+            [r["date"] for r in s["available"]], ["2030-12-30", "2031-01-13"]
+        )
 
     def test_future_iso_date_passes_through_summary(self):
         s = self._summary(self._payload(available=["2030-12-25"]))

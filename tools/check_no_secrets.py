@@ -46,7 +46,8 @@ _GOOGLE_HOST = r"(?:docs|drive|forms|sheets|script)\.google\.com"
 # 設定欄位一旦出現實際值就要擋；佔位符 <...> 放行
 _CONFIG_FIELDS = (
     "chapter_name|chapter_short|room_form_id|room_form_responder_url|"
-    "room_sheet_id|guest_slides_file_id|guest_slides_parent_folder_id"
+    "room_sheet_id|guest_slides_file_id|guest_slides_parent_folder_id|"
+    "signin_sheet_file_id|member_roster_doc_id|member_roster_sheet_id"
 )
 
 BLOCKING_RULES = [

@@ -22,8 +22,9 @@ payload.json 形狀：
     }
 
 `available` 的元素可以是表單原樣的 `M/D`，也可以是 `YYYY-MM-DD`。
-表單選項沒有時間戳可推年份，**今年已過的 M/D 一律回報歧義**（可能是過期殘留、
-也可能是明年場次），人工確認後改填完整日期即可。
+表單選項沒有時間戳，**依表單上的排列順序推年份**（選項由 Apps Script 依時間往下排）：
+第一個選項用今年，之後遇到比前一個早的日期就跨到下一年（12/30 → 1/13）。
+第一個選項已過期、或推出來超過一年後（順序錯亂），才回報歧義。
 
 `bookings` 與 `available` **都必須存在**。抓取失敗時請中止流程，
 不要傳空陣列 —— 空陣列代表「確實查到沒有」，不是「查不到」。
@@ -41,6 +42,8 @@ from zoneinfo import ZoneInfo
 
 WEDNESDAY = 2  # date.weekday()：週一=0
 DEFAULT_LATER_LIMIT = 4
+# 表單選項依順序推年份後，最遠只接受到今天起一年內
+MAX_AHEAD_DAYS = 366
 
 # 試算表時間戳：2026/7/6 上午 11:08:53
 _TS_CJK_RE = re.compile(
@@ -138,46 +141,61 @@ def resolve_booking_date(md: str, timestamp: datetime) -> date:
     )
 
 
-def resolve_option_date(md: str, today: date) -> date:
-    """表單選項的日期只有 M/D，而且**沒有時間戳可當基準**。
-
-    只能以「今天」推年：落在今天或之後就是今年。
-    **今年已經過去的一律回報歧義** —— 可能是表單還沒移除的過期選項，
-    也可能是明年的場次，光靠「過了幾天」分不出來，不能默默推到下一年。
-
-    要處理這種日期，請在 payload 的 `available` 直接給完整日期（`YYYY-MM-DD`），
-    代表已經人工確認過年份。
-    """
-    month, day = parse_md(md)
-    candidate = _try_date(today.year, month, day)
-    if candidate is None:
-        raise AmbiguousDate(f"可預約日期 {md} 在 {today.year} 年不是合法日期")
-    if candidate >= today:
-        return candidate
-    raise AmbiguousDate(
-        f"可預約日期 {md} 在今年（{candidate.isoformat()}）已經過去："
-        f"可能是表單未移除的過期選項，也可能是明年的場次，無法自行判斷。"
-        f"請人工確認後，在 available 改填完整日期（YYYY-MM-DD）再跑一次。"
-    )
-
-
-def resolve_option_entry(value: str, today: date) -> date:
-    """表單選項可以是 `M/D`（依今天推年）或已人工確認的 `YYYY-MM-DD`。
+def _resolve_iso(text: str, today: date) -> date:
+    """已人工確認年份的完整日期。
 
     ⚠️ 知道年份不等於那天還能預約：完整日期同樣要驗證未過期，
     否則人工確認「那是今年的過期選項」之後照著填完整日期，反而會產出錯誤的公告。
     """
-    text = value.strip()
-    if _ISO_RE.match(text):
-        explicit = date.fromisoformat(text)
-        if explicit < today:
+    explicit = date.fromisoformat(text)
+    if explicit < today:
+        raise AmbiguousDate(
+            f"可預約日期 {text} 已經過去（今天 {today.isoformat()}）："
+            f"明確知道年份不代表那天還能預約。這是已過期的表單選項，"
+            f"請從 available 移除，不要當成可預約日期。"
+        )
+    return explicit
+
+
+def resolve_available(values: list[str], today: date) -> list[date]:
+    """表單選項只有 `M/D`、沒有時間戳，改用**表單上的排列順序**推年份。
+
+    Apps Script 依時間往下排選項、並移除過期的，所以：
+      - 第一個選項用今年；它若已經過去，表示過期選項沒被清掉 → 中止
+      - 之後每個比前一個早的日期就跨到下一年（12/30 → 1/13 是 2027-01-13）
+      - 推出來超過今天起 MAX_AHEAD_DAYS 天 → 表單順序錯亂，中止
+    `YYYY-MM-DD` 視為已人工確認，直接採用並作為下一個選項的基準。
+    """
+    resolved: list[date] = []
+    prev: date | None = None
+    for value in values:
+        text = value.strip()
+        if _ISO_RE.match(text):
+            current = _resolve_iso(text, today)
+        else:
+            month, day = parse_md(text)
+            year = today.year if prev is None else prev.year
+            current = _try_date(year, month, day)
+            if prev is not None and (current is None or current < prev):
+                year += 1
+                current = _try_date(year, month, day)
+            if current is None:
+                raise AmbiguousDate(f"可預約日期 {text} 在 {year} 年不是合法日期")
+            if prev is None and current < today:
+                raise AmbiguousDate(
+                    f"表單第一個可預約日期 {text}（{current.isoformat()}）已經過去："
+                    f"Apps Script 應該要移除過期選項，請檢查表單。"
+                )
+        if prev is not None and current == prev:
+            raise ValueError(f"表單可預約日期重複：{fmt(current)}")
+        if current > today + timedelta(days=MAX_AHEAD_DAYS):
             raise AmbiguousDate(
-                f"可預約日期 {text} 已經過去（今天 {today.isoformat()}）："
-                f"明確知道年份不代表那天還能預約。這是已過期的表單選項，"
-                f"請從 available 移除，不要當成可預約日期。"
+                f"可預約日期 {text} 依表單順序推成 {current.isoformat()}，"
+                f"超過今天起 {MAX_AHEAD_DAYS} 天：表單選項可能沒有照時間排列，請檢查表單。"
             )
-        return explicit
-    return resolve_option_date(text, today)
+        resolved.append(current)
+        prev = current
+    return resolved
 
 
 def this_wednesday(today: date) -> date:
@@ -245,7 +263,7 @@ def build_summary(
     wednesday = this_wednesday(today)
     upcoming = sorted(chosen)
 
-    available = [resolve_option_entry(x, today) for x in payload["available"]]
+    available = resolve_available(payload["available"], today)
     clashes = sorted(set(available) & set(chosen))
 
     def as_row(booking: Booking) -> dict:

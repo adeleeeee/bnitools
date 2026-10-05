@@ -35,7 +35,10 @@ REQUIRED_BY_FLOW = {
         "room_form_responder_url", "room_sheet_id",
     ],
     "bnippt": [
-        "schema_version", "guest_slides_file_id",
+        "schema_version", "guest_slides_file_id", "signin_sheet_file_id",
+    ],
+    "bnimembers": [
+        "schema_version", "member_roster_doc_id", "member_roster_sheet_id",
     ],
 }
 
