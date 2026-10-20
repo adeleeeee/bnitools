@@ -71,9 +71,9 @@ python3 tools/bni_config.py --flow bnippt
   - `col0` = 來賓N 標籤（連號 來賓1..來賓N）
   - `col1` = 姓名　`col3` = 專業別內容　`col5` = 引薦人
   - `col2`（「專業別」標籤）、`col4`（「介紹人」標籤）**不要動**
-- 字型：微軟雅黑（Microsoft YaHei）18pt。背景圖在 slideLayout1／master（非每頁 shape），用同一 layout 複製頁面會自動繼承。每頁有小圖 image2.png（r:embed），複製時要一併搬並重映 rId。
+- 字型：微軟正黑體（Microsoft JhengHei）18pt，沿用範本既有 run（`set_cell_text` 只改文字不設字型）。背景圖在 slideLayout1／master（非每頁 shape），用同一 layout 複製頁面會自動繼承。每頁有小圖 image2.png（r:embed），複製時要一併搬並重映 rId。
 - 環境：`uv run --with python-pptx`；python-pptx 1.0.2 實測 OK。
-- **驗證**：頁數正確、每頁 embed 都 resolve、name-cell 字型 = Microsoft YaHei 18pt、**zip 無重複條目**。
+- **驗證**：頁數正確、每頁 embed 都 resolve、name-cell 字型 = Microsoft JhengHei 18pt、**zip 無重複條目**。
 
 ### 腳本範本
 ```python
@@ -178,13 +178,13 @@ print("SAVED:", OUT)
 
 - 結構：
   - 標題段落（`doc.paragraphs[0]`）內含一個 `日期：YYYY.MM.DD` 的 run → 每次要**改成本次場次日期**（格式維持 `2026.09.09` 這種點分）。
-  - 一個 table：**17 列 × 5 欄**。row 0 是表頭 `['', '姓名', '介紹人', '簽名\n中文名稱', '繳費...']`；row 1~16 是編號 1~16。
+  - 一個 table：**5 欄、列數以範本為準**（2026-10 實測 16 列＝表頭＋編號 1~15；舊版曾是 17 列）。row 0 是表頭 `['', '姓名', '介紹人', '簽名\n中文名稱', '繳費...']`，其餘列是編號。來賓數超過編號列數要先告訴使用者。
   - `col0`=編號（不動）　`col1`=姓名　`col2`=介紹人　`col3`/`col4`=現場手簽（留空不動）。
 - 每次要做：**改日期** ＋ **把本週來賓填進 col1/col2 的前 N 列**（清掉上週舊資料），其餘列留空。
 - 姓名欄預設**只放姓名**（不含專業別）；介紹人欄放引薦人（與 PPT 的 col5 同值，可能含括號綽號備註，原樣保留）。
-- 字型：填入的 run 用 Microsoft YaHei、`w:sz` 36（比照現有已填列）。
+- 字型：填入的 run 用 Microsoft JhengHei、`w:sz` 36（比照範本，範本內文 eastAsia 幾乎全是 JhengHei）。
 - 環境：`uv run --with python-docx`。
-- **驗證**：重讀 OUT，P0 日期正確、table 前 N 列 col1/col2 正確、其餘列空、font = Microsoft YaHei。
+- **驗證**：重讀 OUT，P0 日期正確、table 前 N 列 col1/col2 正確、其餘列空、font = Microsoft JhengHei。
 
 ### 腳本範本
 ```python
@@ -214,19 +214,23 @@ def set_cell(cell, text):
     p = cell.paragraphs[0]
     for r in list(p.runs):
         r._r.getparent().remove(r._r)
+    if not text:
+        return
     run = p.add_run(text)
     rpr = run._r.get_or_add_rPr()
     rf = rpr.makeelement(qn('w:rFonts'), {})
     for a in ('w:ascii', 'w:cs', 'w:eastAsia', 'w:hAnsi'):
-        rf.set(qn(a), 'Microsoft YaHei')
+        rf.set(qn(a), 'Microsoft JhengHei')
     rpr.insert(0, rf)
     for tag in ('w:sz', 'w:szCs'):
         e = rpr.makeelement(qn(tag), {}); e.set(qn('w:val'), '36'); rpr.append(e)
 
-for i, (name, intro) in enumerate(rows):
-    tr = t.rows[i + 1]
-    set_cell(tr.cells[1], name)
-    set_cell(tr.cells[2], intro)
+assert len(rows) <= len(t.rows) - 1, f"來賓 {len(rows)} 位超過簽到表編號列 {len(t.rows) - 1}"
+# 所有編號列都重寫：前 N 列填本週，其餘清空（避免殘留上週資料）
+for i in range(1, len(t.rows)):
+    name, intro = rows[i - 1] if i - 1 < len(rows) else ("", "")
+    set_cell(t.rows[i].cells[1], name)
+    set_cell(t.rows[i].cells[2], intro)
 
 doc.save(OUT)
 
