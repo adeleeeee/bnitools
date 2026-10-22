@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""BNI 週會 25 秒會員簡報：把會員上傳的單頁簡報換進上週主檔，另存成本週三的新檔。
+"""BNI 週會 25 秒會員簡報：把會員上傳的單頁簡報換進主檔的共用邏輯。
 
-流程（排程見 .github/workflows/bni25s.yml）：
-  週二 15:07  update   找「本週三 − 7 天」的主檔 BNI25S-YYYYMMDD，把上傳區每位會員的單頁
-                      換進主檔，另存為 BNI25S-<本週三>。上週主檔不動。
-  週三 00:30  cleanup  上傳區所有檔案移到垃圾桶（30 天內可救回）。
+週會流程由 tools/assemble.py 呼叫（會員頁比對、匯入、安全把關），手動執行、不排程：
+各職務／各組交檔時間不固定。下面的 update／cleanup 指令是舊流程（BNI25S-YYYYMMDD 主檔
+＋上傳區），保留供手動使用。
 
 比對規則（找主檔裡「哪一頁是這位會員的」）：
   1. 這支程式換過的頁面帶有隱藏標記（slide 的 cSld name = BNI25S-<編號>），有標記就用標記
@@ -20,7 +19,7 @@
 🔴 公開 repo：log 只能出現會員編號，不得出現姓名、檔名、Drive 檔案 ID。
    會員檔名格式錯誤時只寫「第 N 個檔案」。Drive API 錯誤只印 HTTP 狀態碼。
 
-用法（本機；雲端改由 workflow 寫入 config.json 並以環境變數提供授權）：
+用法（本機）：
     R="uv run --with python-pptx --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/bni25s.py"
     $R update --dry-run --out scratch/bni25s/out.pptx    # 全部跑完但不上傳，產出存本機
     $R update --name-suffix -TEST                         # 上傳成 BNI25S-<日期>-TEST
