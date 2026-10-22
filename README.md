@@ -113,7 +113,7 @@ git config --local core.hooksPath .githooks
 | `tools/bni_config.py` | 私有設定的載入與驗證 |
 | `tools/room_dates.py` | 小房間預約的日期計算（skill 與測試共用同一份邏輯） |
 | `tools/check_no_secrets.py` | 敏感內容掃描 |
-| `tools/bni25s.py` | 25 秒會員簡報：換頁、另存本週檔、清理上傳區 |
+| `tools/bni25s.py` | 25 秒會員頁替換的共用邏輯（`assemble.py` 使用） |
 | `tools/assemble.py` | 週會簡報組裝：各職務／各組上傳檔＋會員個人檔＋來賓名單 → 本週主檔（規則見檔案開頭） |
 
 ⚠️ `gforms.py get/responses` 與 `gdrive_update.py whoami` 的**輸出**含會員姓名、
@@ -170,60 +170,31 @@ routine 在雲端沙箱 clone 這個 repo，**碰不到你的本機檔案與 OAu
 部署步驟寫在該檔案開頭的註解。檔案本身維持 `.xlsx` 格式不變（腳本執行時暫時轉成
 Google Sheet 編輯，編輯完轉回 xlsx 覆蓋回原檔，暫存副本用完即刪）。
 
-## 25 秒會員簡報自動替換（GitHub Actions，全自動）
+## 週會簡報組裝（本機執行）
 
-> ⏳ **狀態：本機已驗證（真實主檔＋真實會員檔），雲端排程尚未上線。**
+> ⏳ **狀態：本機已驗證（Drive 上的真實檔案），尚未排程、尚未寫回 Drive。**
 
-會員每週二 11:00 前把單頁簡報上傳到 Drive 的上傳資料夾。程式先看投影片上「行首的 3 位數編號」
-（且主檔有那位會員的頁），判斷不出來才用檔名裡的 3 位數；兩邊不一致時以投影片為準，所以檔名亂取也沒關係。程式 `tools/bni25s.py`，排程 `.github/workflows/bni25s.yml`：
-
-| 時間（台灣） | 動作 |
-|---|---|
-| 週二 15:07 | 找「本週三 − 7 天」的主檔 `BNI25S-YYYYMMDD`，把每位會員的單頁換進去，另存為 `BNI25S-<本週三>`。上週主檔不動 |
-| 週三 00:30 | 上傳資料夾內的檔案移到垃圾桶（30 天內可救回） |
-
-GitHub 排程常延遲 5–30 分鐘，偶爾整次被跳過；被跳過時到 Actions 頁面按 **Run workflow** 補跑。
-**公開 repo 連續 60 天沒有 commit，排程會被自動停用**（GitHub 會先寄信），到 Actions 頁面重新啟用即可。
-
-**怎麼找到主檔裡「哪一頁是這位會員」**
-1. 這支程式換過的頁面有隱藏標記，有標記就用標記（會員上傳整頁圖片也找得到）
-2. 沒標記：版型名稱含「會員樣板」、且某一行以編號開頭（「230」「232 王小明」），必須剛好一頁。
-   分組總覽頁也有「編號 姓名」，但版型不是會員樣板，所以會被排除
-3. 找不到（例如主檔那頁是整頁圖片）或找到多頁 → 該會員報錯、其他人照常處理，
-   整次執行標為失敗（GitHub 寄信通知）。人工換過一次後，下週起就靠標記
-
-替換方式等同 PowerPoint「保留來源格式」：會員頁連同版型、母片、背景圖一起匯入。
-同一份版型只匯入一次；換完後沒有頁面在用的「本程式匯入的母片」會清掉，原本就在主檔的母片一律不動。
-
-**執行紀錄只印會員編號**（公開 repo），不印姓名、檔名、檔案 ID；檔名抓不到編號時只寫「第 N 個檔案」。
-不檢查投影片尺寸（會員檔常有極小的尺寸差，決定不管）。
-
-**安全把關**：主檔超過 100 MB，Google 不掃毒，所以在入口擋——會員檔含巨集、嵌入物件（OLE）、
-ActiveX、嵌入檔案、連到本機檔案的連結一律拒收（圖表內嵌的 xlsx 資料表放行）；
-Google 判定疑似有毒（下載回 403 cannotDownloadAbusiveFile）的檔案只略過該員，其他人照常處理。
-
-### 本機執行
+主簡報拆成各職務／各組自己的檔，大家編輯後上傳到 Drive「Dismember-PPT」，
+`tools/assemble.py` 依章節把它們組回本週主檔。會員個人 25 秒單頁放在 Dismember-PPT 底下
+以日期命名的子資料夾（`YYYYMMDD`），程式取最新的那個。完整組裝規則寫在 `tools/assemble.py` 開頭。
 
 ```bash
-R="uv run --with python-pptx --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/bni25s.py"
-$R update --dry-run --out scratch/bni25s/out.pptx   # 全部跑完但不上傳，產出存本機
-$R update --name-suffix -TEST                        # 上傳成 BNI25S-<日期>-TEST
-$R cleanup --dry-run
+R="uv run --with python-pptx --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/assemble.py"
+$R dry-run --work <新的工作資料夾>    # 從 Drive 抓最新檔案組裝，成品與報告只存本機
+$R local --master m.pptx --uploads 上傳區/ --members 會員/ --guest g.pptx --out o.pptx --report r.txt
 ```
 
-`config.json` 需要 `slides25s_ppt_folder_id`、`slides25s_upload_folder_id`。
+`config.json` 需要 `slides25s_ppt_folder_id`、`dismember_folder_id`、`guest_slides_file_id`。
+報告會列出：各步驟結果、問題清單、會員在成品的頁碼、自動換組清單、含影片／音訊的頁（最後人工檢查）。
 
-### 雲端部署（一次性，你自己做）
+**會員頁怎麼換**（共用 `tools/bni25s.py`）：先看投影片上「行首的 3 位數編號」，判斷不出來才用檔名的
+3 位數，兩邊不一致時以投影片為準。替換方式等同 PowerPoint「保留來源格式」：會員頁連同版型、
+母片、背景圖一起匯入，換過的頁面帶隱藏標記，下週即使是整頁圖片也找得到。
 
-1. **OAuth 應用程式改成正式版**：Google Cloud Console → OAuth 同意畫面 → 發布狀態按「發布應用程式」。
-   測試中狀態的授權 7 天就失效，雲端排程第二週就會壞。只有自己用，不需送審。
-2. 刪掉 `~/.config/gdrive_api/token.json`，本機跑一次 `$R update --dry-run` 重新授權
-   （會出現「Google 尚未驗證這個應用程式」→ 進階 → 繼續）
-3. GitHub repo → Settings → Secrets and variables → Actions，新增 5 個 secrets：
-   `GDRIVE_CLIENT_ID`、`GDRIVE_CLIENT_SECRET`（來自 credentials.json）、
-   `GDRIVE_REFRESH_TOKEN`（來自新的 token.json）、
-   `BNI25S_PPT_FOLDER_ID`、`BNI25S_UPLOAD_FOLDER_ID`（同 config.json）
-4. Actions → BNI 25 秒簡報 → Run workflow：先 `dry_run` 勾著跑一次，再取消勾選正式跑
+**報告只印會員編號**（公開 repo），不印姓名與會員檔名。
+
+**安全把關**：主檔超過 100 MB，Google 不掃毒，所以在入口擋——會員檔含巨集、嵌入物件（OLE）、
+ActiveX、嵌入檔案、連到本機檔案的連結一律拒收（圖表內嵌的 xlsx 資料表放行）。
 
 ## 交接給下一位
 
