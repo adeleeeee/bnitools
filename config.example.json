@@ -10,5 +10,8 @@
   "guest_slides_parent_folder_id": "<來賓名單投影片所在資料夾 ID（僅供人工定位）>",
   "signin_sheet_file_id": "<來賓簽到表 docx 的 Google 檔案 ID>",
   "member_roster_doc_id": "<列印用會員表 docx 的 Google 檔案 ID>",
-  "member_roster_sheet_id": "<會員名單 xlsx 的 Google 檔案 ID>"
+  "member_roster_sheet_id": "<會員名單 xlsx 的 Google 檔案 ID>",
+  "slides25s_ppt_folder_id": "<25 秒簡報主檔 BNI25S-YYYYMMDD 所在資料夾 ID>",
+  "slides25s_upload_folder_id": "<會員上傳單頁簡報的資料夾 ID>",
+  "dismember_folder_id": "<週會簡報分屍上傳區 Dismember-PPT 的資料夾 ID>"
 }

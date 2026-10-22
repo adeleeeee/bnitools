@@ -40,6 +40,14 @@ REQUIRED_BY_FLOW = {
     "bnimembers": [
         "schema_version", "member_roster_doc_id", "member_roster_sheet_id",
     ],
+    "bni25s": [
+        "schema_version", "timezone", "slides25s_ppt_folder_id",
+        "slides25s_upload_folder_id",
+    ],
+    "assemble": [
+        "schema_version", "slides25s_ppt_folder_id", "dismember_folder_id",
+        "guest_slides_file_id",
+    ],
 }
 
 REPO_ROOT = Path(__file__).resolve().parent.parent

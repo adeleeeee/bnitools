@@ -34,13 +34,16 @@ _SYNTHETIC_FIELDS = [
     ("signin_sheet_file_id", "SYNTHETIC-signin"),
     ("member_roster_doc_id", "SYNTHETIC-roster-doc"),
     ("member_roster_sheet_id", "SYNTHETIC-roster-sheet"),
+    ("slides25s_ppt_folder_id", "SYNTHETIC-25s-folder"),
+    ("slides25s_upload_folder_id", "SYNTHETIC-25s-upload"),
+    ("dismember_folder_id", "SYNTHETIC-dismember"),
 ]
 FULL = {"schema_version": 1, **dict(_SYNTHETIC_FIELDS)}
 
 
 class ValidateTest(unittest.TestCase):
     def test_all_flows_accept_full_config(self):
-        for flow in ("bni-local", "bni-cloud", "bnippt", "bnimembers"):
+        for flow in ("bni-local", "bni-cloud", "bnippt", "bnimembers", "bni25s", "assemble"):
             self.assertEqual(bni_config.validate(dict(FULL), flow), FULL, flow)
 
     def test_minimal_config_per_flow(self):
