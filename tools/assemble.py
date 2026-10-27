@@ -11,6 +11,8 @@
 組裝規則（內容一律以「章節」為準，Mac PowerPoint 會弄丟備忘稿，章節比較可靠）：
   挑檔     上傳區新舊週混放：每個職務／組別只用檔名日期最新的一份（西元 8 碼或民國 7 碼）；
            日期不晚於主檔（主檔名 YYYYMMDD）＝已組過的舊檔不用；沒日期或同一天多份 → 略過並報告
+  PDF      上傳檔是 PDF → 每頁轉成一張圖片投影片（主檔尺寸、等比例置中）再照下面規則處理；
+           沒有章節，所以適用「沒有章節」的規則，切段找標題頁用 PDF 裡的文字
   尺寸     上傳檔（職務檔、組別檔）投影片尺寸和主檔不同但比例相同（如 Canva 匯出）→ 物件與字級等比例縮放；
            比例不同 → 整份略過並報告
   職務檔   上傳檔的章節名對應主檔章節，整段替換。章節名允許「主名-附註」。
@@ -35,19 +37,21 @@
 🔴 公開 repo：報告與 log 裡會員只寫編號，不寫姓名與會員檔名。職務檔與組別檔的檔名不含個資，可以印。
 
 用法：
-    R="uv run --with python-pptx --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/assemble.py"
+    R="uv run --with python-pptx --with pymupdf --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/assemble.py"
     $R dry-run --work scratch/assemble/run1        # 從 Drive 抓最新檔案組裝，成品只存本機
     $R local --master m.pptx --uploads 上傳區/ --members 會員/ --guest g.pptx --out o.pptx --report r.txt
 """
 from __future__ import annotations
 
 import argparse
+import io
 import re
 import sys
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import pymupdf  # PDF 上傳檔轉圖片投影片
 from lxml import etree
 from pptx import Presentation
 from pptx.exc import PackageNotFoundError
@@ -75,6 +79,8 @@ HEADER_ROLES = {"副主席"}  # 有章節時也保留主檔 #固定 標題頁
 NO_HEADER_SECTIONS = {"金質獎章會員"}  # 本來就沒有標題頁，不提醒
 TITLE_SPLIT_ROLES = {"活動組"}  # 沒有章節時依標題頁切段（簡報連續、各段開頭都有標題頁）
 RATIO_TOLERANCE = 0.01
+PDF_RENDER_WIDTH = 1920  # PDF 轉圖的寬度（像素）
+PDF_MIME = "application/pdf"
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 GUEST_SECTION = "來賓20秒自我介紹"
@@ -350,12 +356,37 @@ def match_section(upload_name: str, owned: list[str]) -> str | None:
 
 # ---------------------------------------------------------------- 各步驟
 
+def pdf_to_deck(path: Path, width: int, height: int):
+    """PDF 每頁轉成一張圖片投影片（主檔尺寸，等比例置中）。回傳 (簡報, slide→PDF 該頁文字)。"""
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = width, height
+    texts = {}
+    with pymupdf.open(str(path)) as pdf:
+        if pdf.page_count == 0:
+            raise MemberProblem("PDF 沒有任何頁面，整份略過")
+        for page in pdf:
+            zoom = PDF_RENDER_WIDTH / page.rect.width
+            png = page.get_pixmap(matrix=pymupdf.Matrix(zoom, zoom)).tobytes("png")
+            k = min(width / page.rect.width, height / page.rect.height)
+            w, h = round(page.rect.width * k), round(page.rect.height * k)
+            s = prs.slides.add_slide(prs.slide_layouts[6])
+            s.shapes.add_picture(io.BytesIO(png), (width - w) // 2, (height - h) // 2, w, h)
+            texts[s.slide_id] = page.get_text()
+    return prs, lambda s: texts.get(s.slide_id, "")
+
+
 def open_upload(deck: Deck, path: Path):
+    """回傳 (上傳簡報, 取頁面文字的函式)。PDF 轉成圖片投影片，文字從 PDF 讀（切段找標題頁用）。"""
+    w, h = deck.prs.slide_width, deck.prs.slide_height
+    if path.suffix.lower() == ".pdf":
+        up, text_of = pdf_to_deck(path, w, h)
+        deck.report.lines.append(f"  {path.name}：PDF {len(up.slides)} 頁轉成圖片投影片")
+        return up, text_of
     up = Presentation(str(path))
-    note = fit_to_master(up, deck.prs.slide_width, deck.prs.slide_height)
+    note = fit_to_master(up, w, h)
     if note:
         deck.report.lines.append(f"  {path.name}：{note}")
-    return up
+    return up, slide_text
 
 
 def replace_keep_header(deck: Deck, target: str, items, warn_missing: bool) -> str:
@@ -375,12 +406,12 @@ def replace_keep_header(deck: Deck, target: str, items, warn_missing: bool) -> s
     return f"標題頁沿用主檔，其餘換成 {len(new)} 頁" if head else f"整段換成 {len(new)} 頁"
 
 
-def split_by_titles(slides: list, owned: list[str]) -> list[tuple[str, list]]:
+def split_by_titles(slides: list, owned: list[str], text_of=slide_text) -> list[tuple[str, list]]:
     """沒有章節的上傳檔：依「章節主名」開頭的標題頁切段，標題頁本身不放（用主檔的）。"""
     starts = []
     for name in owned:
         base = name.split("-")[0]
-        hits = [n for n, s in enumerate(slides) if slide_text(s).strip().startswith(base)]
+        hits = [n for n, s in enumerate(slides) if text_of(s).strip().startswith(base)]
         if len(hits) != 1:
             raise MemberProblem(f"沒有章節，標題頁「{base}」找到 {len(hits)} 頁，無法切段，整份略過")
         starts.append(hits[0])
@@ -390,13 +421,13 @@ def split_by_titles(slides: list, owned: list[str]) -> list[tuple[str, list]]:
     return [(name, slides[a + 1:b]) for name, a, b in zip(owned, starts, ends)]
 
 
-def apply_role_without_sections(deck: Deck, role: str, path: Path, up) -> None:
+def apply_role_without_sections(deck: Deck, role: str, path: Path, up, text_of) -> None:
     owned = ROLES[role]
     slides = list(up.slides)
     if len(owned) == 1:
         pieces = [(owned[0], slides)]
     elif role in TITLE_SPLIT_ROLES:
-        pieces = split_by_titles(slides, owned)
+        pieces = split_by_titles(slides, owned, text_of)
     else:
         raise MemberProblem("上傳檔沒有任何章節，整份略過（請用 PowerPoint 確認章節還在）")
     pages = {id(s): i for i, s in enumerate(slides, 1)}
@@ -411,10 +442,10 @@ def apply_role_without_sections(deck: Deck, role: str, path: Path, up) -> None:
 
 def apply_role(deck: Deck, role: str, path: Path) -> None:
     rep = deck.report
-    up = open_upload(deck, path)
+    up, text_of = open_upload(deck, path)
     secs = sections_of(up)
     if not secs:
-        apply_role_without_sections(deck, role, path, up)
+        apply_role_without_sections(deck, role, path, up, text_of)
         return
     owned = ROLES[role]
     pages = {id(s): i for i, s in enumerate(up.slides, 1)}
@@ -478,7 +509,7 @@ def apply_group(deck: Deck, group: str, path: Path) -> None:
     fixed_n = sum(1 for i in ids[1:] if is_fixed(deck.slide[i]))
     if fixed_n and fixed_n != len(old):
         raise MemberProblem(f"主檔「{group}」組別頁判斷不一致：依會員編號 {len(old)} 頁、依 #固定 {fixed_n} 頁")
-    up = open_upload(deck, path)
+    up, _ = open_upload(deck, path)
     head_key = notes_of(head).split()[:1]
     head_img = image_hashes(head)
     # 上傳檔第一頁若是請上台頁就不放（沿用主檔原頁）：備忘稿第一個詞相同、有「請上台」、或圖片相同
@@ -699,7 +730,7 @@ def _member_label(idx: int, filename: str) -> str:
 
 def run_local(master: Path, uploads_dir: Path, members_dir: Path | None, guest: Path,
               out: Path, report_path: Path) -> int:
-    uploads = sorted(p for p in uploads_dir.iterdir() if p.suffix.lower() == ".pptx")
+    uploads = sorted(p for p in uploads_dir.iterdir() if p.suffix.lower() in (".pptx", ".pdf"))
     deck, rep = assemble(master, uploads, member_files(members_dir), guest, out)
     text = render_report(deck, rep, out)
     report_path.write_text(text + "\n", encoding="utf-8")
@@ -722,6 +753,10 @@ def is_deck(f: dict) -> bool:
     return f["mimeType"] in (bni25s.PPTX_MIME, bni25s.GSLIDES_MIME)
 
 
+def is_upload(f: dict) -> bool:
+    return is_deck(f) or f["mimeType"] == PDF_MIME
+
+
 def fetch(svc, cfg: dict, work: Path) -> tuple[Path, Path, Path | None, Path]:
     """抓最新主檔、上傳區根目錄的簡報、PPT 資料夾底下最新日期子資料夾的會員檔、來賓名單。"""
     decks = [f for f in bni25s.list_folder(svc, cfg["slides25s_ppt_folder_id"])
@@ -735,10 +770,15 @@ def fetch(svc, cfg: dict, work: Path) -> tuple[Path, Path, Path | None, Path]:
 
     uploads_dir = work / "uploads"
     uploads_dir.mkdir()
-    ups = [f for f in bni25s.list_folder(svc, cfg["dismember_folder_id"]) if is_deck(f)]
+    listed = bni25s.list_folder(svc, cfg["dismember_folder_id"])
+    ups = [f for f in listed if is_upload(f)]
     for f in ups:
-        bni25s.download(svc, f, uploads_dir / (f["name"].removesuffix(".pptx") + ".pptx"))
-    print(f"上傳區：{len(ups)} 份職務／組別檔")
+        ext = ".pdf" if f["mimeType"] == PDF_MIME else ".pptx"
+        bni25s.download(svc, f, uploads_dir / (f["name"].removesuffix(ext) + ext))
+    print(f"上傳區：{len(ups)} 份職務／組別檔（pptx／Google 簡報／PDF）")
+    for f in listed:
+        if not is_upload(f) and f["mimeType"] != bni25s.FOLDER_MIME:
+            print(f"上傳區：{f['name']} 不是簡報或 PDF，不處理")
 
     # 會員資料夾和 Dismember-PPT 平行，放在 PPT 資料夾底下
     dated = [d for d in list_subfolders(svc, cfg["slides25s_ppt_folder_id"]) if DATE_RE.match(d["name"])]

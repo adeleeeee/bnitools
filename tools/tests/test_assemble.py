@@ -1,7 +1,7 @@
 """assemble 的測試（unittest，全部使用合成資料，不碰網路）。
 
 直接跑：
-    uv run --with python-pptx --with google-api-python-client python tools/tests/test_assemble.py
+    uv run --with python-pptx --with pymupdf --with google-api-python-client python tools/tests/test_assemble.py
 """
 import importlib.util
 import io
@@ -11,6 +11,7 @@ import unittest
 import warnings
 from pathlib import Path
 
+import pymupdf
 from lxml import etree
 from pptx import Presentation
 from pptx.oxml.ns import qn
@@ -113,7 +114,7 @@ class Case(unittest.TestCase):
 
     def run_assemble(self, guest=None):
         out = self.tmp / "out.pptx"
-        uploads = sorted(self.up.glob("*.pptx"))
+        uploads = sorted(p for p in self.up.iterdir() if p.suffix in (".pptx", ".pdf"))
         deck, rep = assemble.assemble(self.master, uploads, assemble.member_files(self.mem),
                                       guest or self.guest, out)
         with warnings.catch_warnings():
@@ -280,6 +281,52 @@ def scaled_upload(path: Path, k_w: float, k_h: float) -> Path:
     tb.text_frame.paragraphs[0].runs[0].font.size = Pt(30)
     prs.save(str(path))
     return path
+
+
+def pdf_upload(path: Path, *pages, size=(720, 540)) -> Path:
+    """每頁一行文字的 PDF（預設 10x7.5 吋，和測試主檔同比例）。"""
+    doc = pymupdf.open()
+    for text in pages:
+        doc.new_page(width=size[0], height=size[1]).insert_text((72, 72), text, fontname="china-t", fontsize=24)
+    doc.save(str(path))
+    return path
+
+
+def pictures(slide) -> int:
+    return sum(1 for sh in slide.shapes if sh.shape_type == 13)
+
+
+class PdfTest(Case):
+    def test_three_minute_pdf(self):
+        pdf_upload(self.up / "三分鐘20261028.pdf", "教育一", "教育二")
+        _, rep, prs = self.run_assemble()
+        got = first_lines(prs)["教育培訓時間-3分鐘教育"]
+        self.assertEqual(got, ["教育培訓時間", "", ""])
+        imgs = [s for s in prs.slides if assemble.slide_text(s) == "" and pictures(s) == 1]
+        self.assertEqual(len(imgs), 2)
+        self.assertTrue(any("PDF 2 頁轉成圖片投影片" in line for line in rep.lines))
+        self.assertEqual(rep.problems, [])
+
+    def test_events_pdf_split_by_pdf_text(self):
+        pdf_upload(self.up / "活動組20261028.pdf", "活動協調報告", "新活動", "夥伴活動分享", "新夥伴1", "新夥伴2")
+        _, rep, prs = self.run_assemble()
+        got = first_lines(prs)
+        self.assertEqual(got["活動協調報告"], ["活動協調報告", ""])
+        self.assertEqual(got["夥伴活動分享"], ["夥伴活動分享", "", ""])
+
+    def test_group_pdf(self):
+        pdf_upload(self.up / "25秒-乙組20261028.pdf", "乙組 組長：簡", "乙組 目標客群")
+        _, rep, prs = self.run_assemble()
+        got = first_lines(prs)["25秒簡報-乙組"]
+        self.assertEqual(got, ["乙組 請上台", "", "", "206 簡均安"])
+
+    def test_pdf_fits_master_keeping_ratio(self):
+        pdf_upload(self.up / "三分鐘20261028.pdf", "寬版", size=(960, 540))  # 16:9 放進 4:3 主檔
+        _, _, prs = self.run_assemble()
+        pic = next(sh for s in prs.slides for sh in s.shapes if sh.shape_type == 13)
+        self.assertEqual(pic.width, prs.slide_width)
+        self.assertAlmostEqual(pic.height / pic.width, 540 / 960, places=3)
+        self.assertEqual(pic.top, (prs.slide_height - pic.height) // 2)
 
 
 class SizeTest(Case):
