@@ -3,16 +3,24 @@
 
 主簡報「分屍」成各自負責的檔，大家編輯後上傳到 Drive「Dismember-PPT」，程式依章節組回去。
 
-上傳區（Dismember-PPT）：
-  根目錄              職務檔 <職務>YYYYMMDD.pptx、組別檔 25秒-<組名>YYYYMMDD.pptx
-  YYYYMMDD/ 子資料夾  會員個人 25 秒單頁檔（取名稱日期最新的那個資料夾）
+上傳區：
+  Dismember-PPT/                職務檔 <職務>YYYYMMDD.pptx、組別檔 25秒-<組名>YYYYMMDD.pptx
+                                （日期在前也可以，如 YYYYMMDD副主席.pptx）
+  PPT/YYYYMMDD/ 子資料夾        會員個人 25 秒單頁檔，與 Dismember-PPT 平行（取名稱日期最新的那個）
 
 組裝規則（內容一律以「章節」為準，Mac PowerPoint 會弄丟備忘稿，章節比較可靠）：
+  挑檔     上傳區新舊週混放：每個職務／組別只用檔名日期最新的一份（西元 8 碼或民國 7 碼）；
+           日期不晚於主檔（主檔名 YYYYMMDD）＝已組過的舊檔不用；沒日期或同一天多份 → 略過並報告
+  尺寸     上傳檔（職務檔、組別檔）投影片尺寸和主檔不同但比例相同（如 Canva 匯出）→ 物件與字級等比例縮放；
+           比例不同 → 整份略過並報告
   職務檔   上傳檔的章節名對應主檔章節，整段替換。章節名允許「主名-附註」。
            上傳檔有章節但沒有投影片 → 本週沒內容，保留空章節
            上傳檔缺少負責的章節     → 主檔原內容不動並報告
-           上傳檔完全沒有章節       → 整份略過並報告
+           上傳檔完全沒有章節       → 三分鐘：整份當作唯一章節；活動組：依各章節名的標題頁切段；
+                                      其他職務整份略過並報告
            副主席的 BNI簡介 只換備忘稿含 #BNI台灣發展現況 的那一頁
+           副主席其他章節、沒有章節的三分鐘／活動組：主檔章節第一頁是 #固定 標題頁就保留，
+           上傳檔開頭同一張標題頁不重複放（金質獎章會員本來就沒有標題頁）
   組別檔   只換組別頁＝請上台頁之後、第一張會員個人頁之前的所有頁。請上台頁沿用主檔，
            上傳檔第一頁若是請上台頁就丟掉。主檔有標 #固定 的組會交叉比對，不一致就不換。
   會員檔   投影片上的編號優先，其次檔名；換掉該會員在組別章節裡的個人頁。
@@ -63,6 +71,12 @@ ROLES = {
     "活動組": ["活動協調報告", "夥伴活動分享"],
 }
 VP_MONTHLY_TAG = "#BNI台灣發展現況"
+HEADER_ROLES = {"副主席"}  # 有章節時也保留主檔 #固定 標題頁
+NO_HEADER_SECTIONS = {"金質獎章會員"}  # 本來就沒有標題頁，不提醒
+TITLE_SPLIT_ROLES = {"活動組"}  # 沒有章節時依標題頁切段（簡報連續、各段開頭都有標題頁）
+RATIO_TOLERANCE = 0.01
+A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
+P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 GUEST_SECTION = "來賓20秒自我介紹"
 FIXED = ("#固定", "＃固定")
 DATE_RE = re.compile(r"^\d{8}$")
@@ -125,6 +139,53 @@ def sections_of(prs) -> list[tuple[str, list]]:
     by_id = {str(s.slide_id): s for s in prs.slides}
     return [(sec.get("name"), [by_id[e.get("id")] for e in sec.iter(P14 + "sldId")])
             for sec in prs.part._element.iter(P14 + "section")]
+
+
+def same_slide(a, b) -> bool:
+    """同一張標題頁：文字相同（不計空白），或圖片完全相同。"""
+    ta, tb = ("".join(slide_text(s).split()) for s in (a, b))
+    if ta or tb:
+        return ta == tb
+    ia, ib = image_hashes(a), image_hashes(b)
+    return bool(ia) and ia == ib
+
+
+def _scale_part(el, kx: float, ky: float) -> None:
+    """spTree 最上層物件的位置／大小（群組內部座標跟著群組走，不動）與所有字級。"""
+    tree = el.find(f"{P_NS}cSld/{P_NS}spTree")
+    for shape in tree:
+        xfrm = next((x for x in shape.iter(A_NS + "xfrm", P_NS + "xfrm")), None)
+        if xfrm is None:
+            continue  # 位置繼承自版型／母片，版型母片也會縮
+        off, ext = xfrm.find(A_NS + "off"), xfrm.find(A_NS + "ext")
+        if off is not None:
+            off.set("x", str(round(int(off.get("x")) * kx)))
+            off.set("y", str(round(int(off.get("y")) * ky)))
+        if ext is not None:
+            ext.set("cx", str(round(int(ext.get("cx")) * kx)))
+            ext.set("cy", str(round(int(ext.get("cy")) * ky)))
+    for tag in ("rPr", "defRPr", "endParaRPr"):
+        for r in el.iter(A_NS + tag):
+            if r.get("sz"):
+                r.set("sz", str(max(100, round(int(r.get("sz")) * kx))))
+
+
+def fit_to_master(up, width: int, height: int) -> str | None:
+    """上傳檔尺寸和主檔不同但比例相同 → 等比例縮放（記憶體內），回傳說明；比例不同就報錯。"""
+    pw, ph = up.slide_width, up.slide_height
+    if (pw, ph) == (width, height):
+        return None
+    kx, ky = width / pw, height / ph
+    if abs(kx - ky) / kx > RATIO_TOLERANCE:
+        raise MemberProblem(f"投影片比例和主檔不同（{pw}x{ph} vs {width}x{height}），整份略過")
+    for s in up.slides:
+        _scale_part(s._element, kx, ky)
+    for m in up.slide_masters:
+        for lay in m.slide_layouts:
+            _scale_part(lay._element, kx, ky)
+        _scale_part(m._element, kx, ky)
+    up.slide_width, up.slide_height = width, height
+    return f"投影片尺寸 {pw}x{ph} 和主檔不同，已等比例縮放 ×{kx:.3f}（請檢查版面）"
 
 
 # ---------------------------------------------------------------- 主檔模型
@@ -229,13 +290,55 @@ class Deck:
 
 def classify(name: str) -> tuple[str | None, str | None]:
     """('role', 職務) / ('group', 組名) / (None, None)。"""
-    stem = re.sub(r"\d{8}.*$", "", Path(name).stem).strip(" _-")
+    stem = re.sub(r"^\d{7,8}[\s_-]*", "", Path(name).stem)  # 日期在前：20261028副主席
+    stem = re.sub(r"\d{8}.*$", "", stem).strip(" _-")
     if stem.startswith(GROUP_FILE_PREFIX):
         return "group", stem.removeprefix(GROUP_FILE_PREFIX)
     for role in ROLES:
         if stem.startswith(role) or (role == "三分鐘" and stem.startswith("3分鐘")):
             return "role", role
     return None, None
+
+
+def file_date(name: str) -> str | None:
+    """檔名裡的日期 → YYYYMMDD。認西元 8 碼（20261028）與民國 7 碼（1151028）。"""
+    stem = Path(name).stem
+    m = re.search(r"(?<!\d)(20\d{6})(?!\d)", stem)
+    if m:
+        return m.group(1)
+    m = re.search(r"(?<!\d)(1\d{2})(\d{4})(?!\d)", stem)
+    return f"{int(m.group(1)) + 1911}{m.group(2)}" if m else None
+
+
+def select_uploads(uploads: list[Path], master: Path, rep: Report) -> list[Path]:
+    """上傳區新舊週混放：每個職務／組別只取檔名日期最新的一份。
+    主檔檔名是 YYYYMMDD 時，日期不晚於主檔的視為已組過的舊檔，不用。沒有日期的檔無法判斷新舊，略過。"""
+    after = master.stem if DATE_RE.match(master.stem) else None
+    keep, groups = [], {}
+    for f in sorted(uploads):
+        key = classify(f.name)
+        if key == (None, None):
+            keep.append(f)  # 交給後面報「對不到任何職務或組別」
+            continue
+        d = file_date(f.name)
+        if d is None:
+            rep.problems.append(f"{f.name}：檔名沒有日期，無法判斷新舊，略過（請在檔名加 YYYYMMDD）")
+            continue
+        if after and d <= after:
+            rep.lines.append(f"[{f.name}] 日期不晚於主檔 {after}，視為舊檔不用")
+            continue
+        groups.setdefault(key, []).append((d, f))
+    for items in groups.values():
+        top = max(d for d, _ in items)
+        newest = [f for d, f in items if d == top]
+        for d, f in items:
+            if d != top:
+                rep.lines.append(f"[{f.name}] 有更新的檔，不用")
+        if len(newest) > 1:
+            rep.problems.append("同一天有多份：" + "、".join(f.name for f in newest) + "，無法判斷用哪份，全部略過")
+            continue
+        keep.append(newest[0])
+    return sorted(keep)
 
 
 def match_section(upload_name: str, owned: list[str]) -> str | None:
@@ -247,12 +350,72 @@ def match_section(upload_name: str, owned: list[str]) -> str | None:
 
 # ---------------------------------------------------------------- 各步驟
 
+def open_upload(deck: Deck, path: Path):
+    up = Presentation(str(path))
+    note = fit_to_master(up, deck.prs.slide_width, deck.prs.slide_height)
+    if note:
+        deck.report.lines.append(f"  {path.name}：{note}")
+    return up
+
+
+def replace_keep_header(deck: Deck, target: str, items, warn_missing: bool) -> str:
+    """主檔章節第一頁是 #固定 標題頁就保留，後面換成 items；items 開頭若是同一張標題頁就不重複放。
+    items: [(slide, origin)]。先匯入成功才刪舊頁。回傳報告用說明。"""
+    sec = deck.section(target)
+    head = sec[2][0] if sec[2] and is_fixed(deck.slide[sec[2][0]]) else None
+    if head and items and same_slide(deck.slide[head], items[0][0]):
+        items = items[1:]
+    new = deck.import_many(items)
+    for i in sec[2]:
+        if i != head:
+            deck.drop(i)
+    sec[2] = ([head] if head else []) + new
+    if head is None and warn_missing:
+        deck.report.problems.append(f"主檔「{target}」第一頁沒有 #固定 標題頁，整段換掉（請在主檔標題頁備註加 #固定）")
+    return f"標題頁沿用主檔，其餘換成 {len(new)} 頁" if head else f"整段換成 {len(new)} 頁"
+
+
+def split_by_titles(slides: list, owned: list[str]) -> list[tuple[str, list]]:
+    """沒有章節的上傳檔：依「章節主名」開頭的標題頁切段，標題頁本身不放（用主檔的）。"""
+    starts = []
+    for name in owned:
+        base = name.split("-")[0]
+        hits = [n for n, s in enumerate(slides) if slide_text(s).strip().startswith(base)]
+        if len(hits) != 1:
+            raise MemberProblem(f"沒有章節，標題頁「{base}」找到 {len(hits)} 頁，無法切段，整份略過")
+        starts.append(hits[0])
+    if starts[0] != 0 or starts != sorted(starts):
+        raise MemberProblem("沒有章節，標題頁順序不對（第一頁要是第一段的標題頁），整份略過")
+    ends = starts[1:] + [len(slides)]
+    return [(name, slides[a + 1:b]) for name, a, b in zip(owned, starts, ends)]
+
+
+def apply_role_without_sections(deck: Deck, role: str, path: Path, up) -> None:
+    owned = ROLES[role]
+    slides = list(up.slides)
+    if len(owned) == 1:
+        pieces = [(owned[0], slides)]
+    elif role in TITLE_SPLIT_ROLES:
+        pieces = split_by_titles(slides, owned)
+    else:
+        raise MemberProblem("上傳檔沒有任何章節，整份略過（請用 PowerPoint 確認章節還在）")
+    pages = {id(s): i for i, s in enumerate(slides, 1)}
+    for target, _ in pieces:  # 先全部檢查，避免換了一半
+        ids = deck.section(target)[2]
+        if not ids or not is_fixed(deck.slide[ids[0]]):
+            raise MemberProblem(f"沒有章節，主檔「{target}」第一頁不是 #固定 標題頁，無法判斷，整份略過")
+    for target, part in pieces:
+        done = replace_keep_header(deck, target, [(s, (path.name, pages[id(s)])) for s in part], True)
+        deck.report.lines.append(f"  {target}：沒有章節，依{'整份' if len(owned) == 1 else '標題頁切段'}；{done}")
+
+
 def apply_role(deck: Deck, role: str, path: Path) -> None:
     rep = deck.report
-    up = Presentation(str(path))
+    up = open_upload(deck, path)
     secs = sections_of(up)
     if not secs:
-        raise MemberProblem("上傳檔沒有任何章節，整份略過（請用 PowerPoint 確認章節還在）")
+        apply_role_without_sections(deck, role, path, up)
+        return
     owned = ROLES[role]
     pages = {id(s): i for i, s in enumerate(up.slides, 1)}
     used = set()
@@ -280,16 +443,25 @@ def apply_role(deck: Deck, role: str, path: Path) -> None:
             deck.drop(old[0])
             rep.lines.append(f"  {target}：換掉每月數據頁")
             continue
+        items = [(s, (path.name, pages[id(s)])) for s in slides]
+        empty = "（空章節，本週沒有內容）" if not slides else ""
+        if role in HEADER_ROLES:
+            try:
+                done = replace_keep_header(deck, target, items, target not in NO_HEADER_SECTIONS)
+            except MemberProblem as exc:
+                rep.problems.append(f"{path.name}：章節「{target}」匯入失敗：{exc}（這段沒換）")
+                continue
+            rep.lines.append(f"  {target}：{done}{empty}")
+            continue
         try:
-            new = deck.import_many([(s, (path.name, pages[id(s)])) for s in slides])
+            new = deck.import_many(items)
         except MemberProblem as exc:
             rep.problems.append(f"{path.name}：章節「{target}」匯入失敗：{exc}（這段沒換）")
             continue
         for i in sec[2]:
             deck.drop(i)
         sec[2] = new
-        rep.lines.append(f"  {target}：整段換成上傳檔 {len(slides)} 頁"
-                         + ("（空章節，本週沒有內容）" if not slides else ""))
+        rep.lines.append(f"  {target}：整段換成上傳檔 {len(slides)} 頁{empty}")
     for o in owned:
         if o not in used:
             rep.problems.append(f"{path.name}：沒有章節「{o}」，主檔這段維持不變")
@@ -306,7 +478,7 @@ def apply_group(deck: Deck, group: str, path: Path) -> None:
     fixed_n = sum(1 for i in ids[1:] if is_fixed(deck.slide[i]))
     if fixed_n and fixed_n != len(old):
         raise MemberProblem(f"主檔「{group}」組別頁判斷不一致：依會員編號 {len(old)} 頁、依 #固定 {fixed_n} 頁")
-    up = Presentation(str(path))
+    up = open_upload(deck, path)
     head_key = notes_of(head).split()[:1]
     head_img = image_hashes(head)
     # 上傳檔第一頁若是請上台頁就不放（沿用主檔原頁）：備忘稿第一個詞相同、有「請上台」、或圖片相同
@@ -467,7 +639,7 @@ def assemble(master: Path, uploads: list[Path], members: list[MemberFile], guest
              out: Path) -> tuple[Deck, Report]:
     rep = Report()
     deck = Deck(master, rep)
-    for f in sorted(uploads):
+    for f in select_uploads(uploads, master, rep):
         kind, key = classify(f.name)
         rep.lines.append(f"[{f.name}]")
         try:
@@ -551,13 +723,13 @@ def is_deck(f: dict) -> bool:
 
 
 def fetch(svc, cfg: dict, work: Path) -> tuple[Path, Path, Path | None, Path]:
-    """抓最新主檔、上傳區根目錄的簡報、最新日期子資料夾的會員檔、來賓名單。"""
+    """抓最新主檔、上傳區根目錄的簡報、PPT 資料夾底下最新日期子資料夾的會員檔、來賓名單。"""
     decks = [f for f in bni25s.list_folder(svc, cfg["slides25s_ppt_folder_id"])
              if DATE_RE.match(f["name"].removesuffix(".pptx")) and is_deck(f)]
     if not decks:
         sys.exit("❌ PPT 資料夾找不到 YYYYMMDD.pptx 主檔")
     master_f = max(decks, key=lambda f: f["name"])
-    master = work / "master.pptx"
+    master = work / (master_f["name"].removesuffix(".pptx") + ".pptx")  # 保留 YYYYMMDD 檔名，挑上傳檔時要比日期
     print(f"主檔：{master_f['name']}")
     bni25s.download(svc, master_f, master)
 
@@ -568,7 +740,8 @@ def fetch(svc, cfg: dict, work: Path) -> tuple[Path, Path, Path | None, Path]:
         bni25s.download(svc, f, uploads_dir / (f["name"].removesuffix(".pptx") + ".pptx"))
     print(f"上傳區：{len(ups)} 份職務／組別檔")
 
-    dated = [d for d in list_subfolders(svc, cfg["dismember_folder_id"]) if DATE_RE.match(d["name"])]
+    # 會員資料夾和 Dismember-PPT 平行，放在 PPT 資料夾底下
+    dated = [d for d in list_subfolders(svc, cfg["slides25s_ppt_folder_id"]) if DATE_RE.match(d["name"])]
     members_dir = None
     if dated:
         latest = max(dated, key=lambda d: d["name"])

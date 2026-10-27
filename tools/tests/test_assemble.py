@@ -14,7 +14,7 @@ from pathlib import Path
 from lxml import etree
 from pptx import Presentation
 from pptx.oxml.ns import qn
-from pptx.util import Inches
+from pptx.util import Inches, Pt
 
 _TOOLS = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_TOOLS))
@@ -81,8 +81,9 @@ MASTER = [
     ("表揚優秀會員", [S("表揚優秀會員", notes="#固定"), S("舊表揚")]),
     ("金質獎章會員", [S("舊金質")]),
     ("副主席報告-YYYYMMDD副主席", [S("副主席報告"), S("舊副主席內容")]),
-    ("活動協調報告", [S("活動協調報告"), S("舊活動")]),
-    ("夥伴活動分享", [S("夥伴活動分享"), S("舊夥伴")]),
+    ("教育培訓時間-3分鐘教育", [S("教育培訓時間", notes="教育培訓Header #固定"), S("舊教育1"), S("舊教育2")]),
+    ("活動協調報告", [S("活動協調報告", notes="#固定"), S("舊活動")]),
+    ("夥伴活動分享", [S("夥伴活動分享", notes="#固定"), S("舊夥伴")]),
     ("來賓20秒自我介紹", [S("來賓介紹", notes="#固定"), S("許願池", notes="#固定"), S("舊來賓名單")]),
     ("25秒簡報-甲組", [S("甲組 請上台", notes="甲組 #固定"), S("甲組 組長：王", "230 王小明", "115 李大華"),
                    S("230", "王小明"), S("115 李大華")]),
@@ -129,10 +130,44 @@ class ClassifyTest(unittest.TestCase):
         self.assertEqual(assemble.classify("25秒-女性魅力經濟20261028.pptx"), ("group", "女性魅力經濟"))
         self.assertEqual(assemble.classify("會員_230.pptx"), (None, None))
 
+    def test_date_first(self):
+        self.assertEqual(assemble.classify("20261028副主席.pptx"), ("role", "副主席"))
+        self.assertEqual(assemble.classify("20261028_25秒-乙組.pptx"), ("group", "乙組"))
+        self.assertEqual(assemble.classify("秘財1151028.pptx"), ("role", "秘財"))
+
     def test_match_section_with_suffix(self):
         owned = assemble.ROLES["副主席"]
         self.assertEqual(assemble.match_section("副主席報告-20261028副主席", owned), "副主席報告")
         self.assertIsNone(assemble.match_section("秘書財務報告", owned))
+
+
+class SelectUploadsTest(unittest.TestCase):
+    def pick(self, names, master="20261021.pptx"):
+        rep = assemble.Report()
+        got = assemble.select_uploads([Path(n) for n in names], Path(master), rep)
+        return [p.name for p in got], rep
+
+    def test_file_date(self):
+        self.assertEqual(assemble.file_date("秘財1151028.pptx"), "20261028")
+        self.assertEqual(assemble.file_date("20261028副主席.pptx"), "20261028")
+        self.assertEqual(assemble.file_date("25秒-乙組20261028 (1).pptx"), "20261028")
+        self.assertIsNone(assemble.file_date("活動組.pptx"))
+
+    def test_latest_per_role_and_older_than_master_dropped(self):
+        got, rep = self.pick(["三分鐘20261021.pptx", "三分鐘20261026.pptx", "秘財20261021.pptx",
+                              "秘財1151028.pptx", "25秒-乙組20261014.pptx", "副主席20261028.pptx"])
+        self.assertEqual(got, ["三分鐘20261026.pptx", "副主席20261028.pptx", "秘財1151028.pptx"])
+        self.assertEqual(rep.problems, [])
+
+    def test_newer_wins_without_master_date(self):
+        got, _ = self.pick(["三分鐘20261021.pptx", "3分鐘20261028.pptx"], master="m.pptx")
+        self.assertEqual(got, ["3分鐘20261028.pptx"])
+
+    def test_undated_and_same_day_reported(self):
+        got, rep = self.pick(["活動組.pptx", "副主席20261028.pptx", "20261028副主席.pptx"])
+        self.assertEqual(got, [])
+        self.assertTrue(any("活動組.pptx" in p and "沒有日期" in p for p in rep.problems))
+        self.assertTrue(any("同一天有多份" in p for p in rep.problems))
 
 
 class MemberNumberTest(unittest.TestCase):
@@ -176,7 +211,20 @@ class RoleTest(Case):
         self.assertEqual(got["表揚優秀會員"], ["表揚優秀會員", "新表揚"])
         self.assertEqual(got["副主席報告-YYYYMMDD副主席"], ["副主席報告", "新副主席"])
         self.assertEqual(got["金質獎章會員"], ["舊金質"])
-        self.assertTrue(any("金質獎章會員" in p for p in rep.problems))
+        self.assertTrue(any("沒有章節「金質獎章會員」" in p for p in rep.problems))
+        # 主檔副主席報告標題頁沒標 #固定 → 整段換並提醒
+        self.assertTrue(any("副主席報告" in p and "#固定" in p for p in rep.problems))
+
+    def test_vice_president_header_kept_when_upload_lacks_it(self):
+        build([("表揚優秀會員", [S("新表揚A"), S("新表揚B")]), ("金質獎章會員", [S("新金質")])],
+              self.up / "副主席20261028.pptx")
+        _, rep, prs = self.run_assemble()
+        got = first_lines(prs)
+        self.assertEqual(got["表揚優秀會員"], ["表揚優秀會員", "新表揚A", "新表揚B"])
+        self.assertEqual(got["金質獎章會員"], ["新金質"])
+        self.assertFalse(any("金質獎章會員" in p and "#固定" in p for p in rep.problems))
+        head = next(s for s in prs.slides if assemble.slide_text(s) == "表揚優秀會員")
+        self.assertIn("#固定", head.notes_slide.notes_text_frame.text)
 
     def test_empty_section_kept_empty(self):
         build([("活動協調報告", []), ("夥伴活動分享", [S("新夥伴")])], self.up / "活動組20261028.pptx")
@@ -186,15 +234,73 @@ class RoleTest(Case):
         self.assertEqual(got["夥伴活動分享"], ["新夥伴"])
 
     def test_no_sections_skipped(self):
-        build([("x", [S("新教育")])], self.up / "三分鐘20261028.pptx", sections=False)
+        build([("x", [S("新專講")])], self.up / "秘財20261028.pptx", sections=False)
         _, rep, prs = self.run_assemble()
         self.assertTrue(any("沒有任何章節" in p for p in rep.problems))
 
+    def test_three_minute_without_sections(self):
+        build([("x", [S("新教育1"), S("新教育2"), S("新教育3")])], self.up / "三分鐘20261028.pptx", sections=False)
+        _, rep, prs = self.run_assemble()
+        self.assertEqual(first_lines(prs)["教育培訓時間-3分鐘教育"], ["教育培訓時間", "新教育1", "新教育2", "新教育3"])
+        self.assertFalse(rep.problems and any("三分鐘" in p for p in rep.problems))
+
+    def test_events_without_sections_split_by_title(self):
+        build([("x", [S("活動協調報告"), S("新活動1"), S("新活動2"), S("夥伴活動分享"), S("新夥伴1")])],
+              self.up / "活動組20261028.pptx", sections=False)
+        _, rep, prs = self.run_assemble()
+        got = first_lines(prs)
+        self.assertEqual(got["活動協調報告"], ["活動協調報告", "新活動1", "新活動2"])
+        self.assertEqual(got["夥伴活動分享"], ["夥伴活動分享", "新夥伴1"])
+        heads = [s for s in prs.slides if assemble.slide_text(s) in ("活動協調報告", "夥伴活動分享")]
+        self.assertEqual(len(heads), 2)  # 標題頁用主檔的，上傳檔的不重複放
+        self.assertTrue(all("#固定" in s.notes_slide.notes_text_frame.text for s in heads))
+
+    def test_events_without_sections_missing_title_skipped(self):
+        build([("x", [S("活動協調報告"), S("新活動1")])], self.up / "活動組20261028.pptx", sections=False)
+        _, rep, prs = self.run_assemble()
+        got = first_lines(prs)
+        self.assertEqual(got["活動協調報告"], ["活動協調報告", "舊活動"])
+        self.assertEqual(got["夥伴活動分享"], ["夥伴活動分享", "舊夥伴"])
+        self.assertTrue(any("夥伴活動分享" in p and "找到 0 頁" in p for p in rep.problems))
+
     def test_notes_carried(self):
-        build([("表揚優秀會員", [S("表揚優秀會員", notes="#固定 header")])], self.up / "副主席20261028.pptx")
+        build([("副主席報告", [S("副主席報告"), S("新內容", notes="備註要照抄")])], self.up / "副主席20261028.pptx")
         _, _, prs = self.run_assemble()
         notes = [s.notes_slide.notes_text_frame.text for s in prs.slides if s.has_notes_slide]
-        self.assertIn("#固定 header", notes)
+        self.assertIn("備註要照抄", notes)
+
+
+def scaled_upload(path: Path, k_w: float, k_h: float) -> Path:
+    """預設尺寸 ×(k_w, k_h) 的三分鐘檔：一個文字框在 (1.5in, 1.5in)，字級 30pt。"""
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = int(prs.slide_width * k_w), int(prs.slide_height * k_h)
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    tb = s.shapes.add_textbox(Inches(1.5), Inches(1.5), Inches(3), Inches(1.5))
+    tb.text_frame.text = "Canva 教育"
+    tb.text_frame.paragraphs[0].runs[0].font.size = Pt(30)
+    prs.save(str(path))
+    return path
+
+
+class SizeTest(Case):
+    def test_same_ratio_scaled(self):
+        scaled_upload(self.up / "三分鐘20261028.pptx", 1.5, 1.5)
+        _, rep, prs = self.run_assemble()
+        s = next(s for s in prs.slides if assemble.slide_text(s) == "Canva 教育")
+        tb = s.shapes[0]
+        self.assertEqual((tb.left, tb.top, tb.width, tb.height), (Inches(1), Inches(1), Inches(2), Inches(1)))
+        self.assertEqual(tb.text_frame.paragraphs[0].runs[0].font.size, Pt(20))
+        self.assertTrue(any("等比例縮放" in line for line in rep.lines))
+
+    def test_different_ratio_skipped(self):
+        scaled_upload(self.up / "三分鐘20261028.pptx", 1.5, 1.0)
+        _, rep, prs = self.run_assemble()
+        self.assertEqual(first_lines(prs)["教育培訓時間-3分鐘教育"], ["教育培訓時間", "舊教育1", "舊教育2"])
+        self.assertTrue(any("比例和主檔不同" in p for p in rep.problems))
+
+    def test_same_size_untouched(self):
+        self.assertIsNone(assemble.fit_to_master(Presentation(), Presentation().slide_width,
+                                                 Presentation().slide_height))
 
 
 class GroupTest(Case):
