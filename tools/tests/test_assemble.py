@@ -85,7 +85,11 @@ MASTER = [
     ("教育培訓時間-3分鐘教育", [S("教育培訓時間", notes="教育培訓Header #固定"), S("舊教育1"), S("舊教育2")]),
     ("活動協調報告", [S("活動協調報告", notes="#固定"), S("舊活動")]),
     ("夥伴活動分享", [S("夥伴活動分享", notes="#固定"), S("舊夥伴")]),
+    ("新會員/續約會員", [S("舊新會員"), S("續約宣示", notes="#續約會員")]),
+    ("5分鐘主題專講(秘財)", [S("五分鐘主題專講"), S("舊專講")]),
+    ("秘書財務報告", [S("秘書財務報告"), S("舊財務")]),
     ("來賓20秒自我介紹", [S("來賓介紹", notes="#固定"), S("許願池", notes="#固定"), S("舊來賓名單")]),
+    ("來賓感想", [S("來賓感想頁", notes="#固定")]),
     ("25秒簡報-甲組", [S("甲組 請上台", notes="甲組 #固定"), S("甲組 組長：王", "230 王小明", "115 李大華"),
                    S("230", "王小明"), S("115 李大華")]),
     ("25秒簡報-乙組", [S("乙組 請上台", notes="乙組 #固定"), S("乙組 組長：簡", "206 簡均安"), S("206 簡均安")]),
@@ -171,6 +175,34 @@ class SelectUploadsTest(unittest.TestCase):
         self.assertTrue(any("同一天有多份" in p for p in rep.problems))
 
 
+class DriveHelpersTest(unittest.TestCase):
+    PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+    def f(self, name, t):
+        return {"name": name, "modifiedTime": t, "mimeType": self.PPTX}
+
+    def test_pick_master_latest_date_then_modified(self):
+        files = [self.f("20261021.pptx", "2026-10-22T05:51:00Z"),
+                 self.f("20261028_秘財更新.pptx", "2026-10-27T14:17:00Z"),
+                 self.f("20261028.pptx", "2026-10-27T16:02:00Z"),
+                 self.f("報告.pptx", "2026-11-01T00:00:00Z")]
+        f, date = assemble.pick_master(files)
+        self.assertEqual((f["name"], date), ("20261028.pptx", "20261028"))
+        files[1]["modifiedTime"] = "2026-10-28T01:00:00Z"
+        self.assertEqual(assemble.pick_master(files)[0]["name"], "20261028_秘財更新.pptx")
+
+    def test_pick_master_none(self):
+        with self.assertRaises(SystemExit):
+            assemble.pick_master([self.f("報告.pptx", "2026-11-01T00:00:00Z")])
+
+    def test_folder_id_from(self):
+        fid = "A" * 33
+        self.assertEqual(assemble.folder_id_from(f"https://drive.google.com/drive/folders/{fid}?usp=sharing"), fid)
+        self.assertEqual(assemble.folder_id_from(fid), fid)
+        with self.assertRaises(SystemExit):
+            assemble.folder_id_from("https://example.com/x")
+
+
 class MemberNumberTest(unittest.TestCase):
     def slide(self, *lines):
         prs = Presentation()
@@ -235,7 +267,7 @@ class RoleTest(Case):
         self.assertEqual(got["夥伴活動分享"], ["新夥伴"])
 
     def test_no_sections_skipped(self):
-        build([("x", [S("新專講")])], self.up / "秘財20261028.pptx", sections=False)
+        build([("x", [S("新副主席")])], self.up / "副主席20261028.pptx", sections=False)
         _, rep, prs = self.run_assemble()
         self.assertTrue(any("沒有任何章節" in p for p in rep.problems))
 
@@ -263,6 +295,43 @@ class RoleTest(Case):
         self.assertEqual(got["活動協調報告"], ["活動協調報告", "舊活動"])
         self.assertEqual(got["夥伴活動分享"], ["夥伴活動分享", "舊夥伴"])
         self.assertTrue(any("夥伴活動分享" in p and "找到 0 頁" in p for p in rep.problems))
+
+    def renewal(self, prs):
+        return [(assemble.slide_text(s), s._element.get("show")) for s in prs.slides
+                if "續約宣示" in assemble.slide_text(s) or "新會員" in assemble.slide_text(s)]
+
+    def test_finance_without_sections_split_by_title(self):
+        build([("x", [S("五分鐘主題專講 Weekly Themed Talks"), S("新專講1"), S("新專講2"),
+                      S("秘書財務報告 Secretary"), S("新財務")])], self.up / "秘財1151104.pptx", sections=False)
+        _, rep, prs = self.run_assemble()
+        got = first_lines(prs)
+        # 主檔標題頁沒標 #固定 → 連標題頁一起換成上傳檔的
+        self.assertEqual(got["5分鐘主題專講(秘財)"], ["五分鐘主題專講 Weekly Themed Talks", "新專講1", "新專講2"])
+        self.assertEqual(got["秘書財務報告"], ["秘書財務報告 Secretary", "新財務"])
+        # 沒有新會員／續約＝本週沒有：只留宣示頁並隱藏，不算問題
+        self.assertEqual(got["新會員/續約會員"], ["續約宣示"])
+        self.assertEqual(self.renewal(prs), [("續約宣示", "0")])
+        self.assertFalse(any("新會員" in p for p in rep.problems))
+
+    def test_finance_sections_without_new_members(self):
+        build([("5分鐘主題專講(秘財)", [S("五分鐘主題專講"), S("新專講")]), ("秘書財務報告", [S("秘書財務報告")])],
+              self.up / "秘財20261104.pptx")
+        _, rep, prs = self.run_assemble()
+        self.assertEqual(first_lines(prs)["新會員/續約會員"], ["續約宣示"])
+        self.assertEqual(self.renewal(prs), [("續約宣示", "0")])
+        self.assertEqual(rep.problems, [])
+
+    def test_finance_empty_new_members_section(self):
+        build([("新會員/續約會員", []), ("5分鐘主題專講(秘財)", [S("新專講")]), ("秘書財務報告", [S("新財務")])],
+              self.up / "秘財20261104.pptx")
+        _, _, prs = self.run_assemble()
+        self.assertEqual(self.renewal(prs), [("續約宣示", "0")])
+
+    def test_finance_with_new_members_replaced(self):
+        build([("新會員/續約會員", [S("新會員A")]), ("5分鐘主題專講(秘財)", [S("新專講")]), ("秘書財務報告", [S("新財務")])],
+              self.up / "秘財20261104.pptx")
+        _, _, prs = self.run_assemble()
+        self.assertEqual(first_lines(prs)["新會員/續約會員"], ["新會員A"])
 
     def test_notes_carried(self):
         build([("副主席報告", [S("副主席報告"), S("新內容", notes="備註要照抄")])], self.up / "副主席20261028.pptx")
@@ -411,6 +480,50 @@ class MoveTest(Case):
         self.assertTrue(any(p.startswith("115：") for p in rep.problems))
 
 
+class MemberFolderGroupTest(Case):
+    def test_group_file_in_member_folder(self):
+        build([("x", [S("乙組 請上台"), S("乙組 組長：簡 新總覽", "206 簡均安")])],
+              self.mem / "25秒-乙組 PowerTeam_20261104.pptx", sections=False)
+        _, rep, prs = self.run_assemble()
+        self.assertEqual(first_lines(prs)["25秒簡報-乙組"], ["乙組 請上台", "乙組 組長：簡 新總覽", "206 簡均安"])
+        self.assertFalse(any("PowerTeam" in p for p in rep.problems))
+
+    def test_mixed_file_split_into_group_and_member(self):
+        build([("x", [S("NOW 丙組 請上台 NEXT 甲組"), S("丙組 新介紹"), S("No.", "301", "林新")])],
+              self.mem / "301-林某_PowerTeam.pptx", sections=False)
+        deck, rep, prs = self.run_assemble()
+        self.assertEqual(first_lines(prs)["25秒簡報-丙組"], ["丙組 請上台", "丙組 新介紹", "No."])
+        self.assertIn("301", deck.member_sid)
+        self.assertFalse(any("林某" in line for line in rep.lines + rep.problems))  # 會員檔名不進報告
+
+    def test_member_file_scaled_to_master(self):
+        src = build([("x", [S("230", "王新")])], self.tmp / "big.pptx", sections=False)
+        prs = Presentation(str(src))
+        prs.slide_width, prs.slide_height = prs.slide_width * 3 // 2, prs.slide_height * 3 // 2
+        prs.save(str(self.mem / "230-王.pptx"))
+        deck, rep, out = self.run_assemble()
+        self.assertIn("230", deck.member_sid)
+        self.assertTrue(any("230：會員檔投影片尺寸" in line for line in rep.lines))
+
+    def test_subset_copy_with_link_to_dropped_slide(self):
+        src = build([("x", [S("請上台頁"), S("組別頁"), S("個人頁")])], self.tmp / "linked.pptx", sections=False)
+        prs = Presentation(str(src))
+        slides = list(prs.slides)
+        slides[2].shapes[0].click_action.target_slide = slides[0]  # 動作按鈕連回第 1 頁
+        prs.save(str(src))
+        out = self.tmp / "one.pptx"
+        assemble.subset_copy(src, [2], out)
+        got = Presentation(str(out))
+        self.assertEqual([assemble.slide_text(s) for s in got.slides], ["個人頁"])
+        got.save(str(out))  # 再存一次再開，仍是同一頁
+        self.assertEqual([assemble.slide_text(s) for s in Presentation(str(out)).slides], ["個人頁"])
+
+    def test_unknown_group_reported(self):
+        build([("x", [S("NOW 戊組 請上台"), S("戊組 介紹")])], self.mem / "x.pptx", sections=False)
+        _, rep, _ = self.run_assemble()
+        self.assertTrue(any("對不到主檔的組別" in p for p in rep.problems))
+
+
 class GuestTest(Case):
     def test_guests_shown(self):
         _, rep, prs = self.run_assemble()
@@ -419,10 +532,33 @@ class GuestTest(Case):
         self.assertEqual(len(got), 3)
         self.assertTrue(all(s._element.get("show") is None for s in list(prs.slides)[:3]))
 
-    def test_no_guest_hides_first_two(self):
+    def hidden(self, prs):
+        return [assemble.slide_text(s).split("\n")[0] for s in prs.slides if s._element.get("show") == "0"]
+
+    def test_guest_not_updated_hides_guest_sections(self):
+        out = self.tmp / "out.pptx"
+        _, rep = assemble.assemble(self.master, [], [], None, out)
+        prs = Presentation(str(out))
+        self.assertEqual(first_lines(prs)["來賓20秒自我介紹"], ["來賓介紹", "許願池", "舊來賓名單"])
+        self.assertEqual([h for h in self.hidden(prs) if h != "續約宣示"], ["來賓介紹", "許願池", "舊來賓名單", "來賓感想頁"])
+
+    def test_guests_shown_feedback_shown(self):
+        _, _, prs = self.run_assemble()
+        self.assertNotIn("來賓感想頁", self.hidden(prs))
+
+    def test_missing_feedback_section_reported(self):
+        master = build([sec for sec in MASTER if sec[0] != "來賓感想"], self.tmp / "m2.pptx")
+        _, rep = assemble.assemble(master, [], [], None, self.tmp / "o2.pptx")
+        self.assertTrue(any("來賓感想" in p for p in rep.problems))
+
+    def test_guest_is_new(self):
+        master = {"modifiedTime": "2026-10-27T16:02:00Z"}
+        self.assertFalse(assemble.guest_is_new({"modifiedTime": "2026-10-27T10:47:00Z"}, master))
+        self.assertTrue(assemble.guest_is_new({"modifiedTime": "2026-11-03T09:00:00Z"}, master))
+
+    def test_empty_guest_list_hides_all(self):
         _, _, prs = self.run_assemble(guest_deck(self.tmp / "g0.pptx"))
-        hidden = [assemble.slide_text(s).split("\n")[0] for s in prs.slides if s._element.get("show") == "0"]
-        self.assertEqual(hidden, ["來賓介紹", "許願池"])
+        self.assertEqual(self.hidden(prs), ["來賓介紹", "許願池", "來賓1", "來賓感想頁"])
 
 
 class RotateTest(Case):

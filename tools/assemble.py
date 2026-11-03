@@ -6,7 +6,8 @@
 上傳區：
   Dismember-PPT/                職務檔 <職務>YYYYMMDD.pptx、組別檔 25秒-<組名>YYYYMMDD.pptx
                                 （日期在前也可以，如 YYYYMMDD副主席.pptx）
-  PPT/YYYYMMDD/ 子資料夾        會員個人 25 秒單頁檔，與 Dismember-PPT 平行（取名稱日期最新的那個）
+  會員資料夾（每週不同）        會員個人 25 秒單頁檔；dry-run 啟動時用 --members 給 Drive 資料夾連結
+主檔：PPT 資料夾裡檔名 YYYYMMDD 開頭、日期最新的簡報（如 20261028_秘財更新.pptx）；同一天多份取 Drive 修改時間最新的
 
 組裝規則（內容一律以「章節」為準，Mac PowerPoint 會弄丟備忘稿，章節比較可靠）：
   挑檔     上傳區新舊週混放：每個職務／組別只用檔名日期最新的一份（西元 8 碼或民國 7 碼）；
@@ -19,16 +20,23 @@
            上傳檔有章節但沒有投影片 → 本週沒內容，保留空章節
            上傳檔缺少負責的章節     → 主檔原內容不動並報告
            上傳檔完全沒有章節       → 三分鐘：整份當作唯一章節；活動組：依各章節名的標題頁切段；
+                                      秘財：依「五分鐘主題專講」「秘書財務報告」標題頁切段；
+                                      主檔標題頁沒標 #固定 時連標題頁一起換成上傳檔的；
                                       其他職務整份略過並報告
+           秘財檔沒有「新會員/續約會員」（或該章節是空的）＝本週沒有 → 只留 #續約會員 宣示頁並隱藏
            副主席的 BNI簡介 只換備忘稿含 #BNI台灣發展現況 的那一頁
            副主席其他章節、沒有章節的三分鐘／活動組：主檔章節第一頁是 #固定 標題頁就保留，
            上傳檔開頭同一張標題頁不重複放（金質獎章會員本來就沒有標題頁）
   組別檔   只換組別頁＝請上台頁之後、第一張會員個人頁之前的所有頁。請上台頁沿用主檔，
            上傳檔第一頁若是請上台頁就丟掉。主檔有標 #固定 的組會交叉比對，不一致就不換。
   會員檔   投影片上的編號優先，其次檔名；換掉該會員在組別章節裡的個人頁。
+           會員資料夾裡也會有組長上傳的組別檔（檔名 25秒-<組名>，或第一頁是請上台頁）→ 當組別檔替換；
+           檔裡夾帶的會員個人頁拆出來當會員檔。組名看檔名，檔名沒有就看請上台頁上最先出現的組名。
   換組     組長上傳的組別頁上列有組員編號：會員個人頁目前所在的組沒有列他、
            而剛好另一組有列 → 搬到那組（排在第一位之後，其餘依編號）。判斷不了就不搬並報告。
-  來賓     來賓章節保留 #固定 頁，其餘換成來賓名單投影片；有來賓 → 前兩頁顯示，沒有 → 隱藏
+  來賓     來賓名單投影片 Drive 修改時間沒有晚於主檔 → 沒更新＝本週沒有來賓
+           有更新：來賓章節保留 #固定 頁，其餘換成來賓名單投影片
+           沒有來賓（沒更新或名單空白）→「來賓20秒自我介紹」「來賓感想」兩個章節整段隱藏；有來賓 → 整段顯示
   輪替     上週第一組移到最後
   報告     各步驟結果、問題清單、會員成品頁碼、換組清單、含影片／音訊的頁（最後人工檢查）
 
@@ -38,8 +46,8 @@
 
 用法：
     R="uv run --with python-pptx --with pymupdf --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/assemble.py"
-    $R dry-run --work scratch/assemble/run1        # 從 Drive 抓最新檔案組裝，成品只存本機
-    $R local --master m.pptx --uploads 上傳區/ --members 會員/ --guest g.pptx --out o.pptx --report r.txt
+    $R dry-run --work scratch/assemble/run1 --members <本週會員資料夾連結>   # 成品只存本機
+    $R local --master m.pptx --uploads 上傳區/ --members 會員/ [--guest g.pptx] --out o.pptx --report r.txt
 """
 from __future__ import annotations
 
@@ -55,7 +63,9 @@ import pymupdf  # PDF 上傳檔轉圖片投影片
 from lxml import etree
 from pptx import Presentation
 from pptx.exc import PackageNotFoundError
+from pptx.opc.packuri import PackURI
 from pptx.oxml.ns import qn
+from pptx.parts.slide import SlidePart
 
 import bni25s
 import bni_config
@@ -77,13 +87,17 @@ ROLES = {
 VP_MONTHLY_TAG = "#BNI台灣發展現況"
 HEADER_ROLES = {"副主席"}  # 有章節時也保留主檔 #固定 標題頁
 NO_HEADER_SECTIONS = {"金質獎章會員"}  # 本來就沒有標題頁，不提醒
-TITLE_SPLIT_ROLES = {"活動組"}  # 沒有章節時依標題頁切段（簡報連續、各段開頭都有標題頁）
+TITLE_SPLIT_ROLES = {"活動組", "秘財"}  # 沒有章節時依標題頁切段（簡報連續、各段開頭都有標題頁）
+TITLE_ALIASES = {"5分鐘主題專講(秘財)": ("五分鐘主題專講", "5分鐘主題專講")}  # 標題頁上的字和章節名不同
+NEW_RENEW = "新會員/續約會員"
+RENEWAL_TAG = "#續約會員"  # 續約宣示頁：本週沒有新會員／續約時隱藏
 RATIO_TOLERANCE = 0.01
 PDF_RENDER_WIDTH = 1920  # PDF 轉圖的寬度（像素）
 PDF_MIME = "application/pdf"
 A_NS = "{http://schemas.openxmlformats.org/drawingml/2006/main}"
 P_NS = "{http://schemas.openxmlformats.org/presentationml/2006/main}"
 GUEST_SECTION = "來賓20秒自我介紹"
+GUEST_FEEDBACK_SECTION = "來賓感想"  # 分享與回饋後面那頁，跟著來賓有無顯示／隱藏
 FIXED = ("#固定", "＃固定")
 DATE_RE = re.compile(r"^\d{8}$")
 MEMBER_NO_RE = re.compile(r"(?:^|NO\.\s*|\s)(\d{3})(?=\s|$)", re.MULTILINE | re.IGNORECASE)
@@ -406,38 +420,69 @@ def replace_keep_header(deck: Deck, target: str, items, warn_missing: bool) -> s
     return f"標題頁沿用主檔，其餘換成 {len(new)} 頁" if head else f"整段換成 {len(new)} 頁"
 
 
-def split_by_titles(slides: list, owned: list[str], text_of=slide_text) -> list[tuple[str, list]]:
-    """沒有章節的上傳檔：依「章節主名」開頭的標題頁切段，標題頁本身不放（用主檔的）。"""
-    starts = []
+def split_by_titles(slides: list, owned: list[str], text_of=slide_text) -> list[tuple[str, object, list]]:
+    """沒有章節的上傳檔：依標題頁（章節主名或 TITLE_ALIASES 開頭）切段 → [(章節, 標題頁, 內容頁)]。
+    新會員/續約會員 沒有標題頁＝本週沒有，不算錯（不回傳這段）。"""
+    found = []
     for name in owned:
-        base = name.split("-")[0]
-        hits = [n for n, s in enumerate(slides) if text_of(s).strip().startswith(base)]
+        titles = TITLE_ALIASES.get(name, (name.split("-")[0],))
+        hits = [n for n, s in enumerate(slides) if text_of(s).strip().startswith(titles)]
+        if not hits and name == NEW_RENEW:
+            continue
         if len(hits) != 1:
-            raise MemberProblem(f"沒有章節，標題頁「{base}」找到 {len(hits)} 頁，無法切段，整份略過")
-        starts.append(hits[0])
+            raise MemberProblem(f"沒有章節，標題頁「{titles[0]}」找到 {len(hits)} 頁，無法切段，整份略過")
+        found.append((name, hits[0]))
+    starts = [n for _, n in found]
     if starts[0] != 0 or starts != sorted(starts):
         raise MemberProblem("沒有章節，標題頁順序不對（第一頁要是第一段的標題頁），整份略過")
     ends = starts[1:] + [len(slides)]
-    return [(name, slides[a + 1:b]) for name, a, b in zip(owned, starts, ends)]
+    return [(name, slides[a], slides[a + 1:b]) for (name, a), b in zip(found, ends)]
+
+
+def set_no_new_members(deck: Deck) -> str:
+    """本週沒有新會員／續約：章節只留 #續約會員 宣示頁並隱藏。"""
+    sec = deck.section(NEW_RENEW)
+    keep = [i for i in sec[2] if RENEWAL_TAG in notes_of(deck.slide[i])]
+    for i in sec[2]:
+        if i not in keep:
+            deck.drop(i)
+    for i in keep:
+        deck.slide[i]._element.set("show", "0")
+    sec[2] = keep
+    return f"  {NEW_RENEW}：本週沒有，續約宣示頁隱藏"
 
 
 def apply_role_without_sections(deck: Deck, role: str, path: Path, up, text_of) -> None:
     owned = ROLES[role]
     slides = list(up.slides)
-    if len(owned) == 1:
-        pieces = [(owned[0], slides)]
-    elif role in TITLE_SPLIT_ROLES:
-        pieces = split_by_titles(slides, owned, text_of)
-    else:
-        raise MemberProblem("上傳檔沒有任何章節，整份略過（請用 PowerPoint 確認章節還在）")
     pages = {id(s): i for i, s in enumerate(slides, 1)}
-    for target, _ in pieces:  # 先全部檢查，避免換了一半
-        ids = deck.section(target)[2]
+    rep = deck.report
+    if len(owned) == 1:
+        ids = deck.section(owned[0])[2]
         if not ids or not is_fixed(deck.slide[ids[0]]):
-            raise MemberProblem(f"沒有章節，主檔「{target}」第一頁不是 #固定 標題頁，無法判斷，整份略過")
-    for target, part in pieces:
-        done = replace_keep_header(deck, target, [(s, (path.name, pages[id(s)])) for s in part], True)
-        deck.report.lines.append(f"  {target}：沒有章節，依{'整份' if len(owned) == 1 else '標題頁切段'}；{done}")
+            raise MemberProblem(f"沒有章節，主檔「{owned[0]}」第一頁不是 #固定 標題頁，無法判斷，整份略過")
+        done = replace_keep_header(deck, owned[0], [(s, (path.name, pages[id(s)])) for s in slides], True)
+        rep.lines.append(f"  {owned[0]}：沒有章節，依整份；{done}")
+        return
+    if role not in TITLE_SPLIT_ROLES:
+        raise MemberProblem("上傳檔沒有任何章節，整份略過（請用 PowerPoint 確認章節還在）")
+    pieces = split_by_titles(slides, owned, text_of)
+    for target, _, _ in pieces:  # 先全部檢查，避免換了一半
+        deck.section(target)
+    for target, title, body in pieces:
+        ids = deck.section(target)[2]
+        if ids and is_fixed(deck.slide[ids[0]]):  # 主檔標題頁有 #固定 → 用主檔的
+            done = replace_keep_header(deck, target, [(s, (path.name, pages[id(s)])) for s in body], True)
+        else:  # 主檔標題頁沒標 → 連標題頁一起換成上傳檔的
+            sec = deck.section(target)
+            new = deck.import_many([(s, (path.name, pages[id(s)])) for s in [title] + body])
+            for i in sec[2]:
+                deck.drop(i)
+            sec[2] = new
+            done = f"整段換成上傳檔 {len(new)} 頁（含標題頁）"
+        rep.lines.append(f"  {target}：沒有章節，依標題頁切段；{done}")
+    if role == "秘財" and NEW_RENEW not in [t for t, _, _ in pieces]:
+        rep.lines.append(set_no_new_members(deck))
 
 
 def apply_role(deck: Deck, role: str, path: Path) -> None:
@@ -474,6 +519,9 @@ def apply_role(deck: Deck, role: str, path: Path) -> None:
             deck.drop(old[0])
             rep.lines.append(f"  {target}：換掉每月數據頁")
             continue
+        if target == NEW_RENEW and not slides:
+            rep.lines.append(set_no_new_members(deck))
+            continue
         items = [(s, (path.name, pages[id(s)])) for s in slides]
         empty = "（空章節，本週沒有內容）" if not slides else ""
         if role in HEADER_ROLES:
@@ -494,7 +542,11 @@ def apply_role(deck: Deck, role: str, path: Path) -> None:
         sec[2] = new
         rep.lines.append(f"  {target}：整段換成上傳檔 {len(slides)} 頁{empty}")
     for o in owned:
-        if o not in used:
+        if o in used:
+            continue
+        if o == NEW_RENEW:  # 秘財檔沒放這段＝本週沒有新會員／續約
+            rep.lines.append(set_no_new_members(deck))
+        else:
             rep.problems.append(f"{path.name}：沒有章節「{o}」，主檔這段維持不變")
 
 
@@ -644,13 +696,30 @@ def apply_guests(deck: Deck, guest_path: Path) -> None:
         deck.drop(i)
     sec[2] = fixed + new
     names = guest_names(g)
-    for i in fixed[:2]:
-        el = deck.slide[i]._element
-        if names:
-            el.attrib.pop("show", None)
-        else:
-            el.set("show", "0")
-    deck.report.lines.append(f"  來賓 {len(names)} 位 → 前兩頁{'顯示' if names else '隱藏'}；來賓名單 {len(new)} 頁")
+    if not names:
+        deck.report.lines.append(f"  來賓 0 位；來賓名單 {len(new)} 頁")
+        set_guest_visible(deck, False)
+        return
+    deck.report.lines.append(f"  來賓 {len(names)} 位；來賓名單 {len(new)} 頁")
+    set_guest_visible(deck, True)
+
+
+def set_guest_visible(deck: Deck, shown: bool) -> None:
+    """有來賓：來賓章節與來賓感想全部顯示；沒有來賓：全部隱藏。"""
+    targets = [GUEST_SECTION, GUEST_FEEDBACK_SECTION]
+    for name in targets:
+        try:
+            ids = deck.section(name)[2]
+        except MemberProblem:
+            deck.report.problems.append(f"主檔沒有「{name}」章節，這段沒有{'顯示' if shown else '隱藏'}（請在主檔加章節）")
+            continue
+        for i in ids:
+            el = deck.slide[i]._element
+            if shown:
+                el.attrib.pop("show", None)
+            else:
+                el.set("show", "0")
+        deck.report.lines.append(f"  {name}：{'顯示' if shown else '隱藏'}")
 
 
 def rotate_groups(deck: Deck) -> None:
@@ -666,10 +735,103 @@ def rotate_groups(deck: Deck) -> None:
 
 # ---------------------------------------------------------------- 組裝
 
-def assemble(master: Path, uploads: list[Path], members: list[MemberFile], guest: Path,
+def group_of_member_file(deck: Deck, mf: MemberFile, prs) -> str | None:
+    """會員資料夾裡的組別檔（組長上傳）：檔名是 25秒-<組名>，或第一頁是請上台頁。回傳組名；不是組別檔回傳 None。
+    組名：檔名開頭對主檔組名；檔名對不到就看請上台頁上最先出現的組名（後面常接 NEXT 下一組）。"""
+    kind, key = classify(mf.filename)
+    first = slide_text(prs.slides[0]) if len(prs.slides) else ""
+    if kind != "group" and "請上台" not in first:
+        return None
+    names = [s[0].removeprefix(GROUP_PREFIX) for s in deck.group_sections()]
+    if kind == "group":
+        hits = [g for g in names if key == g or key.startswith(g)]
+    else:
+        hits = sorted((g for g in names if g in first), key=first.index)[:1]
+    if len(hits) != 1:
+        raise MemberProblem(f"看起來是組別檔，但對不到主檔的組別（找到 {len(hits)} 組），略過")
+    return hits[0]
+
+
+def subset_copy(src: Path, keep: list[int], out: Path) -> None:
+    """只留第 keep 頁（0 起算）另存；章節清單拿掉（組別檔、會員檔都不看章節）。
+    被留下的頁用連結（如動作按鈕）指到的頁，即使拿掉也還在檔案裡；重開檔時 python-pptx 會把留下的頁
+    改名成 slide1.xml…，跟這些殘留頁撞名、讀到錯的頁 → 殘留頁先改成不會撞的名字。"""
+    prs = Presentation(str(src))
+    lst = prs.slides._sldIdLst
+    for n, e in reversed(list(enumerate(list(lst)))):
+        if n not in keep:
+            prs.part.drop_rel(e.get(qn("r:id")))
+            lst.remove(e)
+    kept = {id(prs.part.related_part(e.get(qn("r:id")))) for e in lst}
+    leftovers = [p for p in prs.part.package.iter_parts()
+                 if isinstance(p, SlidePart) and id(p) not in kept]
+    for k, part in enumerate(leftovers, 1):
+        part.partname = PackURI(f"/ppt/slides/slide_unlisted{k}.xml")
+    for sec_lst in list(prs.part._element.iter(P14 + "sectionLst")):
+        ext = sec_lst.getparent()
+        ext.getparent().remove(ext)
+    prs.save(str(out))
+
+
+def sort_member_folder(deck: Deck, members: list[MemberFile], work: Path
+                       ) -> tuple[list[tuple[str, Path, str]], list[MemberFile]]:
+    """會員資料夾裡混了組別檔：拆成 [(組名, 組別檔, 報告用說明)] 和會員個人檔。
+    組別檔裡的會員個人頁拆出來當會員檔，其餘頁（含請上台頁）當組別檔。
+    拆出來的檔名只用組名與編號——會員檔名含姓名，不能出現在報告。"""
+    groups, rest = [], []
+    for mf in members:
+        try:
+            prs = Presentation(str(mf.path))
+        except (PackageNotFoundError, zipfile.BadZipFile, KeyError):
+            rest.append(mf)  # 交給 apply_members 報「無法開啟」
+            continue
+        try:
+            g = group_of_member_file(deck, mf, prs)
+        except MemberProblem as exc:
+            deck.report.problems.append(f"{mf.label}：{exc}")
+            continue
+        work.mkdir(exist_ok=True)
+        if g is None:
+            try:
+                rest.append(fitted_member(deck, mf, prs, work / f"fit_{len(rest)}.pptx"))
+            except MemberProblem as exc:
+                deck.report.problems.append(f"{mf.label}：{exc}")
+            continue
+        nums = {n: member_number(s) for n, s in enumerate(prs.slides)}
+        gpath = work / f"25秒-{g}（會員資料夾{mf.label}）.pptx"
+        subset_copy(mf.path, [n for n, x in nums.items() if not x], gpath)
+        groups.append((g, gpath, mf.label))
+        for n, x in nums.items():
+            if x:
+                mpath = work / f"{x}.pptx"
+                subset_copy(mf.path, [n], mpath)
+                one = MemberFile(label=x, filename=mpath.name, path=mpath)
+                try:
+                    rest.append(fitted_member(deck, one, Presentation(str(mpath)), mpath))
+                except MemberProblem as exc:
+                    deck.report.problems.append(f"{x}：{exc}")
+    return groups, rest
+
+
+def fitted_member(deck: Deck, mf: MemberFile, prs, out: Path) -> MemberFile:
+    """會員檔尺寸和主檔不同（如 Canva）→ 等比例縮放另存到 out；尺寸相同或差不到 1%（原本就換得好）原檔照用。"""
+    w, h = deck.prs.slide_width, deck.prs.slide_height
+    if abs(prs.slide_width / w - 1) <= RATIO_TOLERANCE and abs(prs.slide_height / h - 1) <= RATIO_TOLERANCE:
+        return mf
+    note = fit_to_master(prs, w, h)
+    if note is None:
+        return mf
+    prs.save(str(out))
+    deck.report.lines.append(f"  {mf.label}：會員檔{note}")
+    return MemberFile(label=mf.label, filename=mf.filename, path=out)
+
+
+def assemble(master: Path, uploads: list[Path], members: list[MemberFile], guest: Path | None,
              out: Path) -> tuple[Deck, Report]:
+    """guest 是 None＝來賓名單投影片沒更新，來賓章節沿用主檔。"""
     rep = Report()
     deck = Deck(master, rep)
+    member_groups, members = sort_member_folder(deck, members, out.parent / "member_split")
     for f in select_uploads(uploads, master, rep):
         kind, key = classify(f.name)
         rep.lines.append(f"[{f.name}]")
@@ -682,11 +844,21 @@ def assemble(master: Path, uploads: list[Path], members: list[MemberFile], guest
                 rep.problems.append(f"{f.name}：檔名對不到任何職務或組別，略過")
         except MemberProblem as exc:
             rep.problems.append(f"{f.name}：{exc}（這份沒換）")
+    for g, gpath, label in member_groups:
+        rep.lines.append(f"[會員資料夾的組別檔：{g}（{label}）]")
+        try:
+            apply_group(deck, g, gpath)
+        except MemberProblem as exc:
+            rep.problems.append(f"會員資料夾的組別檔 {g}（{label}）：{exc}（這份沒換）")
     rep.lines.append(f"[會員個人檔 {len(members)} 份]")
     apply_members(deck, members)
     auto_move(deck)
     rep.lines.append("[來賓名單投影片]")
-    apply_guests(deck, guest)
+    if guest is None:
+        rep.lines.append("  來賓名單投影片沒有比主檔新＝本週沒有來賓")
+        set_guest_visible(deck, False)
+    else:
+        apply_guests(deck, guest)
     rotate_groups(deck)
     deck.finish(out)
     return deck, rep
@@ -728,7 +900,7 @@ def _member_label(idx: int, filename: str) -> str:
         return f"第 {idx} 個會員檔"
 
 
-def run_local(master: Path, uploads_dir: Path, members_dir: Path | None, guest: Path,
+def run_local(master: Path, uploads_dir: Path, members_dir: Path | None, guest: Path | None,
               out: Path, report_path: Path) -> int:
     uploads = sorted(p for p in uploads_dir.iterdir() if p.suffix.lower() in (".pptx", ".pdf"))
     deck, rep = assemble(master, uploads, member_files(members_dir), guest, out)
@@ -740,15 +912,6 @@ def run_local(master: Path, uploads_dir: Path, members_dir: Path | None, guest: 
 
 # ---------------------------------------------------------------- Drive
 
-def list_subfolders(svc, folder_id: str) -> list[dict]:
-    resp = svc.files().list(
-        q=f"'{folder_id}' in parents and trashed = false and mimeType = '{bni25s.FOLDER_MIME}'",
-        fields="files(id, name)", pageSize=200,
-        supportsAllDrives=True, includeItemsFromAllDrives=True,
-    ).execute()
-    return resp.get("files", [])
-
-
 def is_deck(f: dict) -> bool:
     return f["mimeType"] in (bni25s.PPTX_MIME, bni25s.GSLIDES_MIME)
 
@@ -757,15 +920,40 @@ def is_upload(f: dict) -> bool:
     return is_deck(f) or f["mimeType"] == PDF_MIME
 
 
-def fetch(svc, cfg: dict, work: Path) -> tuple[Path, Path, Path | None, Path]:
-    """抓最新主檔、上傳區根目錄的簡報、PPT 資料夾底下最新日期子資料夾的會員檔、來賓名單。"""
-    decks = [f for f in bni25s.list_folder(svc, cfg["slides25s_ppt_folder_id"])
-             if DATE_RE.match(f["name"].removesuffix(".pptx")) and is_deck(f)]
-    if not decks:
-        sys.exit("❌ PPT 資料夾找不到 YYYYMMDD.pptx 主檔")
-    master_f = max(decks, key=lambda f: f["name"])
-    master = work / (master_f["name"].removesuffix(".pptx") + ".pptx")  # 保留 YYYYMMDD 檔名，挑上傳檔時要比日期
-    print(f"主檔：{master_f['name']}")
+MASTER_NAME_RE = re.compile(r"^(\d{8})")
+FOLDER_LINK_RE = re.compile(r"/folders/([A-Za-z0-9_-]+)")
+
+
+def pick_master(files: list[dict]) -> tuple[dict, str]:
+    """PPT 資料夾裡檔名 YYYYMMDD 開頭的簡報（如 20261028.pptx、20261028_秘財更新.pptx）：
+    日期最新的；同一天有多份取 Drive 修改時間最新的。回傳 (檔案, YYYYMMDD)。"""
+    dated = [(m.group(1), f) for f in files if is_deck(f) and (m := MASTER_NAME_RE.match(f["name"]))]
+    if not dated:
+        raise SystemExit("❌ PPT 資料夾找不到 YYYYMMDD 開頭的主檔")
+    date, f = max(dated, key=lambda df: (df[0], df[1]["modifiedTime"]))
+    return f, date
+
+
+def folder_id_from(link: str) -> str:
+    """Drive 資料夾連結或 ID → ID。"""
+    m = FOLDER_LINK_RE.search(link)
+    if m:
+        return m.group(1)
+    if re.fullmatch(r"[A-Za-z0-9_-]{20,}", link):
+        return link
+    raise SystemExit("❌ --members 要給 Drive 資料夾連結（.../folders/<ID>）或資料夾 ID")
+
+
+def guest_is_new(guest_f: dict, master_f: dict) -> bool:
+    """來賓名單投影片在主檔之後有改過才換。"""
+    return guest_f["modifiedTime"] > master_f["modifiedTime"]
+
+
+def fetch(svc, cfg: dict, work: Path, members_link: str) -> tuple[Path, Path, Path, Path | None]:
+    """抓最新主檔、上傳區根目錄的簡報、本週會員資料夾（啟動時給連結）、來賓名單（有更新才抓）。"""
+    master_f, date = pick_master(bni25s.list_folder(svc, cfg["slides25s_ppt_folder_id"]))
+    master = work / f"{date}.pptx"  # 存成 YYYYMMDD.pptx，挑上傳檔時要比日期
+    print(f"主檔：{master_f['name']}（Drive 修改時間 {master_f['modifiedTime'][:16]} UTC）")
     bni25s.download(svc, master_f, master)
 
     uploads_dir = work / "uploads"
@@ -777,27 +965,25 @@ def fetch(svc, cfg: dict, work: Path) -> tuple[Path, Path, Path | None, Path]:
         bni25s.download(svc, f, uploads_dir / (f["name"].removesuffix(ext) + ext))
     print(f"上傳區：{len(ups)} 份職務／組別檔（pptx／Google 簡報／PDF）")
     for f in listed:
-        if not is_upload(f) and f["mimeType"] != bni25s.FOLDER_MIME:
+        if not is_upload(f):
             print(f"上傳區：{f['name']} 不是簡報或 PDF，不處理")
 
-    # 會員資料夾和 Dismember-PPT 平行，放在 PPT 資料夾底下
-    dated = [d for d in list_subfolders(svc, cfg["slides25s_ppt_folder_id"]) if DATE_RE.match(d["name"])]
-    members_dir = None
-    if dated:
-        latest = max(dated, key=lambda d: d["name"])
-        members_dir = work / "members"
-        members_dir.mkdir()
-        mfiles = [f for f in bni25s.list_folder(svc, latest["id"]) if is_deck(f)]
-        for f in mfiles:
-            bni25s.download(svc, f, members_dir / (f["name"].removesuffix(".pptx") + ".pptx"))
-        print(f"會員資料夾：{latest['name']}（{len(mfiles)} 份）")
-    else:
-        print("會員資料夾：沒有 YYYYMMDD 子資料夾，本次不換會員頁")
+    members_dir = work / "members"
+    members_dir.mkdir()
+    mid = folder_id_from(members_link)
+    mname = svc.files().get(fileId=mid, fields="name", supportsAllDrives=True).execute()["name"]
+    mfiles = [f for f in bni25s.list_folder(svc, mid) if is_deck(f)]
+    for f in mfiles:
+        bni25s.download(svc, f, members_dir / (f["name"].removesuffix(".pptx") + ".pptx"))
+    print(f"會員資料夾：{mname}（{len(mfiles)} 份）")
 
-    guest = work / "guest.pptx"
-    gf = svc.files().get(fileId=cfg["guest_slides_file_id"], fields="id, mimeType",
+    gf = svc.files().get(fileId=cfg["guest_slides_file_id"], fields="id, mimeType, modifiedTime",
                          supportsAllDrives=True).execute()
-    bni25s.download(svc, gf, guest)
+    guest = None
+    if guest_is_new(gf, master_f):
+        guest = work / "guest.pptx"
+        bni25s.download(svc, gf, guest)
+    print(f"來賓名單：Drive 修改時間 {gf['modifiedTime'][:16]} UTC → {'有更新，會換' if guest else '沒比主檔新，不換'}")
     return master, uploads_dir, members_dir, guest
 
 
@@ -806,13 +992,13 @@ def cmd_dry_run(args) -> int:
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=False)
     svc = bni25s.get_drive_service()
-    master, uploads_dir, members_dir, guest = fetch(svc, cfg, work)
+    master, uploads_dir, members_dir, guest = fetch(svc, cfg, work, args.members)
     return run_local(master, uploads_dir, members_dir, guest, work / "assembled.pptx", work / "report.txt")
 
 
 def cmd_local(args) -> int:
     return run_local(Path(args.master), Path(args.uploads), Path(args.members) if args.members else None,
-                     Path(args.guest), Path(args.out), Path(args.report))
+                     Path(args.guest) if args.guest else None, Path(args.out), Path(args.report))
 
 
 def main() -> None:
@@ -820,12 +1006,13 @@ def main() -> None:
     sub = p.add_subparsers(dest="cmd", required=True)
     dr = sub.add_parser("dry-run", help="從 Drive 抓最新檔案組裝，成品只存本機")
     dr.add_argument("--work", required=True, help="工作資料夾（必須是新的）")
+    dr.add_argument("--members", required=True, help="本週會員個人檔的 Drive 資料夾連結（每週不同）")
     dr.set_defaults(func=cmd_dry_run)
     lo = sub.add_parser("local", help="完全離線：本機檔案組裝")
     lo.add_argument("--master", required=True)
     lo.add_argument("--uploads", required=True, help="職務檔／組別檔所在資料夾")
     lo.add_argument("--members", help="會員個人檔所在資料夾")
-    lo.add_argument("--guest", required=True)
+    lo.add_argument("--guest", help="來賓名單投影片；不給＝來賓章節沿用主檔")
     lo.add_argument("--out", required=True)
     lo.add_argument("--report", required=True)
     lo.set_defaults(func=cmd_local)

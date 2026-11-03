@@ -175,15 +175,16 @@ Google Sheet 編輯，編輯完轉回 xlsx 覆蓋回原檔，暫存副本用完�
 > ⏳ **狀態：本機執行，不排程；成品由人工檢查後上傳 Drive（2026-10-27 首次正式使用）。**
 
 主簡報拆成各職務／各組自己的檔，大家編輯後上傳到 Drive「Dismember-PPT」，
-`tools/assemble.py` 依章節把它們組回本週主檔。會員個人 25 秒單頁放在 PPT 資料夾底下、
-與 Dismember-PPT 平行的日期子資料夾（`YYYYMMDD`），程式取最新的那個。
+`tools/assemble.py` 依章節把它們組回本週主檔。會員個人 25 秒單頁的資料夾每週不同，執行時用 `--members` 給連結；
+組長上傳到這個資料夾的組別檔（請上台頁開頭、可夾帶個人頁）也會自動當組別檔替換。
+主檔取 PPT 資料夾裡 `YYYYMMDD` 開頭、日期最新的檔（同一天多份取修改時間最新的）；來賓名單投影片沒有比主檔新就不換。
 上傳 PDF 會每頁轉成圖片投影片放進去；Canva 等尺寸不同但比例相同的上傳檔會自動等比例縮放；三分鐘、活動組沒有章節時也能判斷。
 完整組裝規則寫在 `tools/assemble.py` 開頭。
 
 ```bash
 R="uv run --with python-pptx --with pymupdf --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/assemble.py"
-$R dry-run --work <新的工作資料夾>    # 從 Drive 抓最新檔案組裝，成品與報告只存本機
-$R local --master m.pptx --uploads 上傳區/ --members 會員/ --guest g.pptx --out o.pptx --report r.txt
+$R dry-run --work <新的工作資料夾> --members <本週會員資料夾連結>   # 從 Drive 抓檔組裝，成品與報告只存本機
+$R local --master m.pptx --uploads 上傳區/ --members 會員/ [--guest g.pptx] --out o.pptx --report r.txt
 ```
 
 `config.json` 需要 `slides25s_ppt_folder_id`、`dismember_folder_id`、`guest_slides_file_id`。
