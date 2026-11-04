@@ -207,7 +207,7 @@ ActiveX、嵌入檔案、連到本機檔案的連結一律拒收（圖表內嵌�
 | 檔案 | 用途 |
 |---|---|
 | `apps_script/weekly_upload_folder.gs` | 每週一建立本週上傳資料夾並發通知，週二 17:30 關閉分享 |
-| `apps_script/form_date_options.gs` | 維護小房間預約表單的日期選項（綁定在表單上） |
+| `apps_script/form_date_options.gs` | 舊版預約表單 script，**不用部署**（表單已有別人維護的 script） |
 | `apps_script/rotate_category_order.gs` | 會員名單分組順序輪替 |
 
 GAS 跑在 Google 帳號底下，**clone 這個 repo 不會讓它們跑起來**，接手的人要用自己的帳號部署。
@@ -219,7 +219,6 @@ clasp login
 
 1. 到 [Apps Script 設定](https://script.google.com/home/usersettings) 開啟 Google Apps Script API。
 2. 新建專案後用 `clasp clone <scriptId>` 抓到工作資料夾，把 repo 裡的 `.gs` 內容放進去，再 `clasp push`。
-   綁定表單的 script 要從表單的「擴充功能 → Apps Script」建立，script ID 在「專案設定」。
 3. 在「專案設定 → 指令碼屬性」填入設定值，並依各檔案開頭說明建立觸發器。
 
 clasp **不會**帶走觸發器和指令碼屬性，一定要重設。`.clasp.json` 不進版控，`~/.clasprc.json` 是登入憑證，不要給別人。
@@ -251,7 +250,7 @@ repo 不會帶走以下項目，要另外處理：
 1. **`config.json`**：由前一位私下提供，不要貼在群組或 issue。分會 Drive 的檔案靠裡面的 ID 存取。
 2. **Google 授權**：照「Google 授權」段落用自己的帳號設定。
 3. **工具環境**：安裝 Claude Code、`uv`、Python；部署 GAS 另需 clasp。
-4. **Apps Script**：每週上傳資料夾和預約表單的 script 都在個人帳號下，照「Google Apps Script」段落用自己的帳號部署、設定觸發器，並選擇通知管道。
+4. **Apps Script**：每週上傳資料夾的 script 在個人帳號下，照「Google Apps Script」段落用自己的帳號部署、設定觸發器，並選擇通知管道。預約表單的 script 不用部署。
    `PARENT_ID` 設成自己 Drive 裡的資料夾，每週資料夾就會開在那裡。
 5. **commit 閘門**：照「安裝 commit 前的敏感內容閘門」段落啟用。
 
@@ -259,6 +258,6 @@ repo 不會帶走以下項目，要另外處理：
 
 ⚠️ 每週資料夾在週二 17:30 轉為私人，所以組裝用的 Google 帳號要和部署該 script 的帳號相同。
 
-⚠️ 新的 script 上線後，請前一位刪掉自己那兩支的觸發器，否則每週會多開一個資料夾，預約日期也可能被重複修改。
+⚠️ 新的 script 上線後，請前一位刪掉自己那支的觸發器，否則每週會多開一個資料夾。
 
 這個 repo 留在前一位的帳號下，你的修改推不回來。要自己維護的話，請建自己的 repo，再把 `origin` 改過去。
