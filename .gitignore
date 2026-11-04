@@ -8,6 +8,10 @@ client_secret*.json
 .env
 .env.*
 
+# clasp：script ID 與登入憑證
+.clasp.json
+.clasprc.json
+
 # 工具執行產物：輸出含會員姓名、email、檔案連結
 scratch/
 output/
