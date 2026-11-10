@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""用 Google Drive API 就地覆蓋既有 Drive 檔的內容（fileId／分享連結不變）。
+"""用 Google Drive API 就地覆蓋既有 Drive 檔的內容（fileId／分享連結不變），或上傳新檔到指定資料夾。
 
 Claude 的 Google Drive 連接器只能建新檔或改中繼資料，無法覆蓋既有檔內容，
 故自建此腳本。token 全域快取在 ~/.config/gdrive_api/，任何資料夾可跑。
@@ -29,7 +29,10 @@ Claude 的 Google Drive 連接器只能建新檔或改中繼資料，無法覆�
     # 在 Drive 上另存一份副本（新 fileId，原檔不受影響），預設放在同一個資料夾
     $R copy --file-id <FILE_ID> --name "原檔名_20260101備份"
 
-  <FILE_ID> 從私有設定 config.json 取得（如 guest_slides_file_id），不要寫死在文件或程式裡。
+    # 把本機檔上傳成資料夾裡的新檔（資料夾裡已有同名檔就停下來，不覆蓋、不產生重複）
+    $R create --folder-id <FOLDER_ID> --local <path> --name "20260101.pptx"
+
+  <FILE_ID>／<FOLDER_ID> 從私有設定 config.json 取得（如 guest_slides_file_id、slides25s_ppt_folder_id），不要寫死在文件或程式裡。
 
 注意：
   - 只覆蓋「內容」，不改檔名、不改父資料夾、不改權限，連結與 fileId 完全不變。
@@ -174,8 +177,55 @@ def cmd_copy(args):
     print(f"新檔連結：https://drive.google.com/file/d/{copied['id']}/view")
 
 
+def create_file(service, folder_id, name, media, mime=None):
+    """在資料夾裡建立新檔並回傳 Drive 的檔案資訊。
+
+    資料夾裡已有同名檔（不含垃圾桶）就直接停：Drive 允許同名並存，
+    靜默多出一份會讓「取最新主檔」之類的邏輯選錯檔。
+    """
+    escaped = name.replace("\\", "\\\\").replace("'", "\\'")
+    same = service.files().list(
+        q=f"'{folder_id}' in parents and name = '{escaped}' and trashed = false",
+        fields="files(id,name)",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()["files"]
+    if same:
+        sys.exit(f"❌ 資料夾裡已經有「{name}」（{len(same)} 份）。要覆蓋請用 update，要並存請換檔名。")
+
+    body = {"name": name, "parents": [folder_id]}
+    if mime:
+        body["mimeType"] = mime
+    return service.files().create(
+        body=body,
+        media_body=media,
+        fields="id,name,size,modifiedTime",
+        supportsAllDrives=True,
+    ).execute()
+
+
+def cmd_create(args):
+    from googleapiclient.http import MediaFileUpload
+
+    local = Path(args.local).expanduser()
+    if not local.exists():
+        sys.exit(f"本機檔不存在：{local}")
+    name = args.name or local.name
+
+    service = get_service()
+    mime = MIME_BY_EXT.get(local.suffix.lower())  # None → 讓 Drive 自行判斷
+    media = MediaFileUpload(str(local), mimetype=mime, resumable=True)
+    created = create_file(service, args.folder_id, name, media, mime)
+
+    local_size = local.stat().st_size
+    if int(created["size"]) != local_size:
+        sys.exit(f"❌ 上傳後大小不符：本機 {local_size} bytes，Drive {created['size']} bytes")
+    print(f"✅ 已上傳新檔「{created['name']}」（{local_size} bytes，與本機一致）")
+    print(f"開檔：https://drive.google.com/file/d/{created['id']}/view")
+
+
 def main():
-    p = argparse.ArgumentParser(description="覆蓋既有 Google Drive 檔內容（連結不變）")
+    p = argparse.ArgumentParser(description="覆蓋既有 Google Drive 檔內容（連結不變），或上傳新檔")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     sub.add_parser("whoami", help="顯示目前授權帳號（順便完成首次登入）").set_defaults(func=cmd_whoami)
@@ -195,6 +245,12 @@ def main():
     cp.add_argument("--file-id", required=True, help="要複製的 Drive fileId")
     cp.add_argument("--name", required=True, help="副本的檔名")
     cp.set_defaults(func=cmd_copy)
+
+    cr = sub.add_parser("create", help="把本機檔上傳成資料夾裡的新檔（同名已存在就停）")
+    cr.add_argument("--folder-id", required=True, help="目的地 Drive 資料夾 ID")
+    cr.add_argument("--local", required=True, help="本機檔路徑")
+    cr.add_argument("--name", help="Drive 上的檔名（不給＝本機檔名）")
+    cr.set_defaults(func=cmd_create)
 
     args = p.parse_args()
     args.func(args)

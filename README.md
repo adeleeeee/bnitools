@@ -7,10 +7,11 @@ BNI 分會幾件例行雜務的自動化：
 | **小房間預約狀況** | 每週 | 從預約表單抓「還能約哪幾天」、從彙整試算表抓「誰約了」，組成可直接貼 LINE 群組的訊息 |
 | **來賓名單投影片** | 每週 | 把本週來賓（姓名／專業別／引薦人）填進投影片範本，覆蓋回 Google Drive 原檔（連結不變） |
 | **來賓簽到表** | 每週 | 同一份來賓名單：更新簽到表 docx 的場次日期＋姓名/介紹人欄，覆蓋回原檔（連結不變） |
+| **週會簡報組裝** | 每週 | 把領導團隊上傳的職務檔／組別檔、會員個人 25 秒頁、來賓名單組成本週主簡報，檢查後上傳成新檔 |
 | **會員離會同步更新** | 不定期 | 從「會員簽到表」(docx) 與「會員名單」(xlsx) 同步刪除離會會員；docx 直接覆蓋，xlsx 用新分頁保留舊版本；兩邊日期都改成下一個最近的星期三 |
 
 這些都是給 [Claude Code](https://claude.com/claude-code) 用的**專案 skill**：
-在這個資料夾裡開 Claude Code，說「本週小房間狀態」「本週的來賓」或「XX 號離會」即可。
+在這個資料夾裡開 Claude Code，說「本週小房間狀態」「本週的來賓」「組本週週會簡報」或「XX 號離會」即可。
 
 ---
 
@@ -112,7 +113,7 @@ git config --local core.hooksPath .githooks
 | 檔案 | 用途 |
 |---|---|
 | `tools/gforms.py` | 唯讀讀 Google 表單的題目、選項、回覆 |
-| `tools/gdrive_update.py` | 下載／就地覆蓋既有 Drive 檔內容／另存副本（fileId／分享連結不變） |
+| `tools/gdrive_update.py` | 下載／就地覆蓋既有 Drive 檔內容／另存副本（fileId／分享連結不變）／上傳新檔到指定資料夾 |
 | `tools/bni_config.py` | 私有設定的載入與驗證 |
 | `tools/room_dates.py` | 小房間預約的日期計算（skill 與測試共用同一份邏輯） |
 | `tools/check_no_secrets.py` | 敏感內容掃描 |
@@ -175,7 +176,11 @@ Google Sheet 編輯，編輯完轉回 xlsx 覆蓋回原檔，暫存副本用完�
 
 ## 週會簡報組裝（本機執行）
 
-> ⏳ **狀態：本機執行，不排程；成品由人工檢查後上傳 Drive（2026-10-27 首次正式使用）。**
+> ⏳ **狀態：本機執行，不排程（2026-10-27 首次正式使用）。**
+
+**平常用法**：在 Claude Code 說「組本週週會簡報」並貼上本週會員資料夾的連結（`bniweekly` skill）。
+它會抓檔、組裝、回報會員頁碼與沒交新檔的職務；你開成品檢查過（特別是有影片的頁）、說可以，
+它才上傳成 `YYYYMMDD.pptx` 新檔到 PPT 資料夾。有來賓的週次要先更新來賓名單（`bnippt`）再組裝。
 
 主簡報拆成各職務／各組自己的檔，大家編輯後上傳到 Drive「Dismember-PPT」，
 `tools/assemble.py` 依章節把它們組回本週主檔。會員個人 25 秒單頁的資料夾每週不同，執行時用 `--members` 給連結；
@@ -188,7 +193,14 @@ Google Sheet 編輯，編輯完轉回 xlsx 覆蓋回原檔，暫存副本用完�
 R="uv run --with python-pptx --with pymupdf --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/assemble.py"
 $R dry-run --work <新的工作資料夾> --members <本週會員資料夾連結>   # 從 Drive 抓檔組裝，成品與報告只存本機
 $R local --master m.pptx --uploads 上傳區/ --members 會員/ [--guest g.pptx] --out o.pptx --report r.txt
+
+# 檢查過後上傳成新檔（資料夾裡已有同名檔會停下來，不覆蓋）
+uv run --with google-api-python-client --with google-auth-oauthlib --with google-auth \
+  python tools/gdrive_update.py create --folder-id <slides25s_ppt_folder_id> --local <工作資料夾>/assembled.pptx --name <YYYYMMDD>.pptx
 ```
+
+上傳的檔名一定要 `YYYYMMDD` 開頭，下週組裝才會拿它當底。
+主檔上傳後還要改時**不要重跑完整組裝**（組別會多輪替一次），只改需要的章節。
 
 `config.json` 需要 `slides25s_ppt_folder_id`、`dismember_folder_id`、`guest_slides_file_id`。
 報告會列出：各步驟結果、問題清單、會員在成品的頁碼、自動換組清單、含影片／音訊的頁（最後人工檢查）。

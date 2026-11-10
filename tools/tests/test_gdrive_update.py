@@ -1,9 +1,11 @@
-"""gdrive_update.get_service() 的 OAuth 自癒回歸測試（純標準庫 unittest）。
+"""gdrive_update 的測試（純標準庫 unittest）：get_service() 的 OAuth 自癒，以及 create_file() 上傳新檔。
 
 直接跑（不需 pytest）：
     uv run --with google-auth python tools/tests/test_gdrive_update.py
 
-四條路徑全部以假物件替換外部 API，不碰真網路、不彈瀏覽器：
+create_file()：資料夾沒有同名檔才建立；已有同名檔就停、不呼叫 create；檔名含單引號會跳脫。
+
+get_service() 四條路徑全部以假物件替換外部 API，不碰真網路、不彈瀏覽器：
   1. refresh 成功            → 不啟動 OAuth、正常寫回 token
   2. invalid_grant（撤銷）    → 啟動重新 OAuth、以新 credentials 覆寫 token
   3. 其他 RefreshError（暫時性）→ 原樣拋出、不 OAuth、不寫 token（fail fast）
@@ -174,6 +176,64 @@ class IsInvalidGrantTest(unittest.TestCase):
     def test_other_error_is_false(self):
         exc = RefreshError("nope", {"error": "invalid_client"})
         self.assertFalse(gdrive_update._is_invalid_grant(exc))
+
+
+class FakeDrive:
+    """只實作 create_file() 會用到的 files().list()／files().create()。"""
+
+    def __init__(self, existing):
+        self.existing = existing
+        self.list_kwargs = None
+        self.create_kwargs = None
+
+    def files(self):
+        return self
+
+    def list(self, **kwargs):
+        self.list_kwargs = kwargs
+        return self._Call({"files": self.existing})
+
+    def create(self, **kwargs):
+        self.create_kwargs = kwargs
+        return self._Call({"id": "new-id", "name": kwargs["body"]["name"], "size": "3"})
+
+    class _Call:
+        def __init__(self, result):
+            self._result = result
+
+        def execute(self):
+            return self._result
+
+
+class CreateFileTest(unittest.TestCase):
+    def test_creates_in_folder_when_name_is_free(self):
+        svc = FakeDrive(existing=[])
+        media = object()
+        out = gdrive_update.create_file(svc, "FOLDER", "20260101.pptx", media, "application/x-test")
+        self.assertEqual(out["id"], "new-id")
+        self.assertEqual(svc.create_kwargs["body"],
+                         {"name": "20260101.pptx", "parents": ["FOLDER"], "mimeType": "application/x-test"})
+        self.assertIs(svc.create_kwargs["media_body"], media)
+        self.assertTrue(svc.create_kwargs["supportsAllDrives"])
+        self.assertEqual(svc.list_kwargs["q"],
+                         "'FOLDER' in parents and name = '20260101.pptx' and trashed = false")
+
+    def test_stops_when_same_name_exists(self):
+        svc = FakeDrive(existing=[{"id": "old", "name": "20260101.pptx"}])
+        with self.assertRaises(SystemExit) as ctx:
+            gdrive_update.create_file(svc, "FOLDER", "20260101.pptx", object())
+        self.assertIn("已經有", str(ctx.exception))
+        self.assertIsNone(svc.create_kwargs, "同名已存在時不該建立新檔")
+
+    def test_no_mime_leaves_type_to_drive(self):
+        svc = FakeDrive(existing=[])
+        gdrive_update.create_file(svc, "FOLDER", "a.bin", object())
+        self.assertNotIn("mimeType", svc.create_kwargs["body"])
+
+    def test_quote_in_name_is_escaped_in_query(self):
+        svc = FakeDrive(existing=[])
+        gdrive_update.create_file(svc, "FOLDER", "it's.pptx", object())
+        self.assertIn("name = 'it\\'s.pptx'", svc.list_kwargs["q"])
 
 
 if __name__ == "__main__":
