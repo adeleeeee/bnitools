@@ -200,10 +200,14 @@ uv run --with google-api-python-client --with google-auth-oauthlib --with google
 ```
 
 上傳的檔名一定要 `YYYYMMDD` 開頭，下週組裝才會拿它當底。
-主檔上傳後還要改時**不要重跑完整組裝**（組別會多輪替一次），只改需要的章節。
 
-`config.json` 需要 `slides25s_ppt_folder_id`、`dismember_folder_id`、`guest_slides_file_id`。
-報告會列出：各步驟結果、問題清單、會員在成品的頁碼、自動換組清單、含影片／音訊的頁（最後人工檢查）。
+**同週補件**：主檔上傳後有人重傳或晚交，再跑一次 `dry-run` 即可。主檔檔名日期就是本週例會日（星期三）時，
+程式會自動改成補件——不輪替，只換上次抓檔之後才上傳的檔，其餘頁面（含手動改過的）都不動。
+上次抓檔時間記在成品的檔案屬性；沒有記錄時用主檔的 Drive 修改時間，也可以用 `--since` 指定。
+報告開頭有「🔁 同週補件」才代表判斷正確。
+
+`config.json` 需要 `timezone`、`slides25s_ppt_folder_id`、`dismember_folder_id`、`guest_slides_file_id`。
+報告會列出：各步驟結果、問題清單、本週沒交新檔（沿用上週）的職務與組別、會員在成品的頁碼、自動換組清單、含影片／音訊的頁（最後人工檢查）。
 
 **會員頁怎麼換**（共用 `tools/bni25s.py`）：先看投影片上「行首的 3 位數編號」，判斷不出來才用檔名的
 3 位數，兩邊不一致時以投影片為準。替換方式等同 PowerPoint「保留來源格式」：會員頁連同版型、

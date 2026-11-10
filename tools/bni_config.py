@@ -45,7 +45,7 @@ REQUIRED_BY_FLOW = {
         "slides25s_upload_folder_id",
     ],
     "assemble": [
-        "schema_version", "slides25s_ppt_folder_id", "dismember_folder_id",
+        "schema_version", "timezone", "slides25s_ppt_folder_id", "dismember_folder_id",
         "guest_slides_file_id",
     ],
 }

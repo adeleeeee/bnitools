@@ -491,7 +491,7 @@ def list_folder(svc, folder_id: str, extra_q: str = "") -> list[dict]:
     while True:
         resp = svc.files().list(
             q=q, pageToken=token, pageSize=200,
-            fields="nextPageToken, files(id, name, mimeType, modifiedTime)",
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, createdTime)",
             supportsAllDrives=True, includeItemsFromAllDrives=True,
         ).execute()
         files += resp.get("files", [])

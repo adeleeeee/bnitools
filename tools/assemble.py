@@ -12,6 +12,7 @@
 組裝規則（內容一律以「章節」為準，Mac PowerPoint 會弄丟備忘稿，章節比較可靠）：
   挑檔     上傳區新舊週混放：每個職務／組別只用檔名日期最新的一份（西元 8 碼或民國 7 碼）；
            日期不晚於主檔（主檔名 YYYYMMDD）＝已組過的舊檔不用；沒日期或同一天多份 → 略過並報告
+           空檔（0 bytes）或打不開的檔 → 略過並報告，其他檔照常處理
   PDF      上傳檔是 PDF → 每頁轉成一張圖片投影片（主檔尺寸、等比例置中）再照下面規則處理；
            沒有章節，所以適用「沒有章節」的規則，切段找標題頁用 PDF 裡的文字
   尺寸     上傳檔（職務檔、組別檔）投影片尺寸和主檔不同但比例相同（如 Canva 匯出）→ 物件與字級等比例縮放；
@@ -31,14 +32,21 @@
            上傳檔第一頁若是請上台頁就丟掉。主檔有標 #固定 的組會交叉比對，不一致就不換。
   會員檔   投影片上的編號優先，其次檔名；換掉該會員在組別章節裡的個人頁。
            會員資料夾裡也會有組長上傳的組別檔（檔名 25秒-<組名>，或第一頁是請上台頁）→ 當組別檔替換；
-           檔裡夾帶的會員個人頁拆出來當會員檔。組名看檔名，檔名沒有就看請上台頁上最先出現的組名。
+           檔裡夾帶的會員個人頁拆出來當會員檔。組名看檔名，檔名沒有就看請上台頁上 NEXT 之前最先出現的組名；
+           對不到主檔的組名（例如組長自己改了組名）→ 略過並報告，不會換到 NEXT 寫的下一組。
   換組     組長上傳的組別頁上列有組員編號：會員個人頁目前所在的組沒有列他、
            而剛好另一組有列 → 搬到那組（排在第一位之後，其餘依編號）。判斷不了就不搬並報告。
   來賓     來賓名單投影片 Drive 修改時間沒有晚於主檔 → 沒更新＝本週沒有來賓
            有更新：來賓章節保留 #固定 頁，其餘換成來賓名單投影片
            沒有來賓（沒更新或名單空白）→「來賓20秒自我介紹」「來賓感想」兩個章節整段隱藏；有來賓 → 整段顯示
   輪替     上週第一組移到最後
-  報告     各步驟結果、問題清單、會員成品頁碼、換組清單、含影片／音訊的頁（最後人工檢查）
+  同週補件 主檔檔名日期＝本週例會日（星期三）＝這週已經組過 → 補件（patch）：不輪替；只處理上次抓檔之後
+           才上傳的檔（職務檔、組別檔、會員檔、來賓名單），其餘頁面完全不動，手動改過的內容都留著。
+           「上次抓檔時間」寫在成品的檔案屬性（關鍵字 BNI-ASSEMBLE fetched=…）；沒有就用主檔的 Drive 修改時間，
+           也可以用 --since 指定。補件時來賓名單沒更新＝來賓章節不動（不會隱藏）。
+  同名     上傳區或會員資料夾有同名檔（重傳時 Drive 常會兩份並存）→ 只用最後上傳的那一份
+  沒交     職務／組別本週沒有新檔 → 不更新、沿用主檔內容，報告的「本週沒交新檔」列出來（附註，不算問題）
+  報告     各步驟結果、問題清單、本週沒交新檔的職務與組別、會員成品頁碼、換組清單、含影片／音訊的頁（最後人工檢查）
 
 會員個人頁＝頁面上剛好一個 3 位數會員編號，或帶有本程式的會員標記（cSld name BNI25S-<編號>）。
 
@@ -46,8 +54,9 @@
 
 用法：
     R="uv run --with python-pptx --with pymupdf --with google-api-python-client --with google-auth-oauthlib --with google-auth python tools/assemble.py"
-    $R dry-run --work scratch/assemble/run1 --members <本週會員資料夾連結>   # 成品只存本機
-    $R local --master m.pptx --uploads 上傳區/ --members 會員/ [--guest g.pptx] --out o.pptx --report r.txt
+    $R dry-run --work scratch/assemble/run1 --members <本週會員資料夾連結>   # 成品只存本機；同週再跑會自動變補件
+    $R dry-run --work scratch/assemble/run2 --members <連結> --since 2026-11-10T12:00:00Z   # 補件時指定「這個時間之後上傳的才處理」
+    $R local --master m.pptx --uploads 上傳區/ --members 會員/ [--guest g.pptx] [--patch] --out o.pptx --report r.txt
 """
 from __future__ import annotations
 
@@ -57,7 +66,9 @@ import re
 import sys
 import zipfile
 from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pymupdf  # PDF 上傳檔轉圖片投影片
 from lxml import etree
@@ -110,6 +121,8 @@ class Report:
     lines: list[str] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     moves: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)  # 本週沒交新檔、沿用上週的職務與組別
+    patch: bool = False  # 同週補件：沒輪替、只換新上傳的檔
 
 
 # ---------------------------------------------------------------- 投影片判斷
@@ -330,9 +343,10 @@ def file_date(name: str) -> str | None:
     return f"{int(m.group(1)) + 1911}{m.group(2)}" if m else None
 
 
-def select_uploads(uploads: list[Path], master: Path, rep: Report) -> list[Path]:
+def select_uploads(uploads: list[Path], master: Path, rep: Report, same_week: bool = False) -> list[Path]:
     """上傳區新舊週混放：每個職務／組別只取檔名日期最新的一份。
-    主檔檔名是 YYYYMMDD 時，日期不晚於主檔的視為已組過的舊檔，不用。沒有日期的檔無法判斷新舊，略過。"""
+    主檔檔名是 YYYYMMDD 時，日期不晚於主檔的視為已組過的舊檔，不用。沒有日期的檔無法判斷新舊，略過。
+    same_week＝同週補件：主檔就是本週的，檔名日期和主檔同一天的是重傳檔，要用；更早的才是舊檔。"""
     after = master.stem if DATE_RE.match(master.stem) else None
     keep, groups = [], {}
     for f in sorted(uploads):
@@ -344,8 +358,8 @@ def select_uploads(uploads: list[Path], master: Path, rep: Report) -> list[Path]
         if d is None:
             rep.problems.append(f"{f.name}：檔名沒有日期，無法判斷新舊，略過（請在檔名加 YYYYMMDD）")
             continue
-        if after and d <= after:
-            rep.lines.append(f"[{f.name}] 日期不晚於主檔 {after}，視為舊檔不用")
+        if after and (d < after if same_week else d <= after):
+            rep.lines.append(f"[{f.name}] 日期{'早於' if same_week else '不晚於'}主檔 {after}，視為舊檔不用")
             continue
         groups.setdefault(key, []).append((d, f))
     for items in groups.values():
@@ -392,11 +406,16 @@ def pdf_to_deck(path: Path, width: int, height: int):
 def open_upload(deck: Deck, path: Path):
     """回傳 (上傳簡報, 取頁面文字的函式)。PDF 轉成圖片投影片，文字從 PDF 讀（切段找標題頁用）。"""
     w, h = deck.prs.slide_width, deck.prs.slide_height
+    if path.stat().st_size == 0:
+        raise MemberProblem("檔案是空的（0 bytes），上傳沒有成功，請重新上傳")
     if path.suffix.lower() == ".pdf":
         up, text_of = pdf_to_deck(path, w, h)
         deck.report.lines.append(f"  {path.name}：PDF {len(up.slides)} 頁轉成圖片投影片")
         return up, text_of
-    up = Presentation(str(path))
+    try:
+        up = Presentation(str(path))
+    except (PackageNotFoundError, zipfile.BadZipFile, KeyError) as exc:
+        raise MemberProblem("檔案打不開（不是正常的 pptx），請重新上傳") from exc
     note = fit_to_master(up, w, h)
     if note:
         deck.report.lines.append(f"  {path.name}：{note}")
@@ -737,7 +756,9 @@ def rotate_groups(deck: Deck) -> None:
 
 def group_of_member_file(deck: Deck, mf: MemberFile, prs) -> str | None:
     """會員資料夾裡的組別檔（組長上傳）：檔名是 25秒-<組名>，或第一頁是請上台頁。回傳組名；不是組別檔回傳 None。
-    組名：檔名開頭對主檔組名；檔名對不到就看請上台頁上最先出現的組名（後面常接 NEXT 下一組）。"""
+    組名：檔名開頭對主檔組名；檔名對不到就看請上台頁「NOW」到「請上台」之間寫的組名
+    （沒有 NOW 就看「NEXT」之前）。NEXT 後面是下一組的名字，不能拿來當這份檔的組別
+    （組長自己改了組名時會誤換到下一組）。"""
     kind, key = classify(mf.filename)
     first = slide_text(prs.slides[0]) if len(prs.slides) else ""
     if kind != "group" and "請上台" not in first:
@@ -746,7 +767,12 @@ def group_of_member_file(deck: Deck, mf: MemberFile, prs) -> str | None:
     if kind == "group":
         hits = [g for g in names if key == g or key.startswith(g)]
     else:
-        hits = sorted((g for g in names if g in first), key=first.index)[:1]
+        now = re.search(r"NOW(.*?)請上台", first, flags=re.IGNORECASE | re.DOTALL)
+        own = now.group(1) if now else re.split(r"NEXT", first, maxsplit=1, flags=re.IGNORECASE)[0]
+        hits = sorted((g for g in names if g in own), key=own.index)[:1]
+        if not hits and now:
+            written = " ".join(own.split())
+            raise MemberProblem(f"看起來是組別檔，但請上台頁寫的組名「{written}」對不到主檔的組別，略過")
     if len(hits) != 1:
         raise MemberProblem(f"看起來是組別檔，但對不到主檔的組別（找到 {len(hits)} 組），略過")
     return hits[0]
@@ -827,12 +853,23 @@ def fitted_member(deck: Deck, mf: MemberFile, prs, out: Path) -> MemberFile:
 
 
 def assemble(master: Path, uploads: list[Path], members: list[MemberFile], guest: Path | None,
-             out: Path) -> tuple[Deck, Report]:
-    """guest 是 None＝來賓名單投影片沒更新，來賓章節沿用主檔。"""
-    rep = Report()
+             out: Path, patch: bool = False, stamp: str | None = None) -> tuple[Deck, Report]:
+    """guest 是 None＝來賓名單投影片沒更新：一般組裝當作本週沒有來賓；補件時來賓章節不動。
+    patch＝同週補件：主檔已經是本週組過的，不輪替，沒交新檔的清單也不列（傳進來的本來就只有新上傳的檔）。
+    stamp＝這次抓檔的時間，寫進成品的檔案屬性，下次補件用來判斷哪些檔是之後才上傳的。"""
+    rep = Report(patch=patch)
     deck = Deck(master, rep)
+    if patch:
+        rep.lines.append("🔁 同週補件：主檔是本週已經組過的檔 → 不輪替，只換新上傳的檔，其餘頁面不動")
     member_groups, members = sort_member_folder(deck, members, out.parent / "member_split")
-    for f in select_uploads(uploads, master, rep):
+    selected = select_uploads(uploads, master, rep, same_week=patch)
+    got = {classify(f.name) for f in selected}
+    group_names = [s[0].removeprefix(GROUP_PREFIX) for s in deck.group_sections()]
+    got_groups = {g for g, _, _ in member_groups} | {
+        g for g in group_names for kind, key in got if kind == "group" and (key == g or key.startswith(g))}
+    if not patch:
+        rep.unchanged = [r for r in ROLES if ("role", r) not in got] + [g for g in group_names if g not in got_groups]
+    for f in selected:
         kind, key = classify(f.name)
         rep.lines.append(f"[{f.name}]")
         try:
@@ -854,12 +891,17 @@ def assemble(master: Path, uploads: list[Path], members: list[MemberFile], guest
     apply_members(deck, members)
     auto_move(deck)
     rep.lines.append("[來賓名單投影片]")
-    if guest is None:
+    if guest is None and patch:
+        rep.lines.append("  來賓名單投影片沒有新的更新，來賓章節不動")
+    elif guest is None:
         rep.lines.append("  來賓名單投影片沒有比主檔新＝本週沒有來賓")
         set_guest_visible(deck, False)
     else:
         apply_guests(deck, guest)
-    rotate_groups(deck)
+    if not patch:
+        rotate_groups(deck)
+    if stamp:
+        deck.prs.core_properties.keywords = STAMP_PREFIX + stamp
     deck.finish(out)
     return deck, rep
 
@@ -882,6 +924,8 @@ def render_report(deck: Deck, rep: Report, out: Path) -> str:
         + ["", "👤 會員個人頁（成品頁碼）："] + (members or ["  （無）"])
         + ["", "🔀 換組："] + (rep.moves or ["  （無）"])
         + ["", "⚠️ 問題／略過："] + ([f"  {p}" for p in rep.problems] or ["  （無）"])
+        + ([] if rep.patch else
+           ["", "📌 本週沒交新檔（沿用上週，不算問題）：", "  " + ("、".join(rep.unchanged) or "（無）")])
         + ["", "🎬 含影片／音訊的頁面（最後請逐頁檢查）："] + (media or ["  （無）"])
     )
 
@@ -901,9 +945,9 @@ def _member_label(idx: int, filename: str) -> str:
 
 
 def run_local(master: Path, uploads_dir: Path, members_dir: Path | None, guest: Path | None,
-              out: Path, report_path: Path) -> int:
+              out: Path, report_path: Path, patch: bool = False, stamp: str | None = None) -> int:
     uploads = sorted(p for p in uploads_dir.iterdir() if p.suffix.lower() in (".pptx", ".pdf"))
-    deck, rep = assemble(master, uploads, member_files(members_dir), guest, out)
+    deck, rep = assemble(master, uploads, member_files(members_dir), guest, out, patch=patch, stamp=stamp)
     text = render_report(deck, rep, out)
     report_path.write_text(text + "\n", encoding="utf-8")
     print(text)
@@ -946,20 +990,85 @@ def folder_id_from(link: str) -> str:
 
 def guest_is_new(guest_f: dict, master_f: dict) -> bool:
     """來賓名單投影片在主檔之後有改過才換。"""
-    return guest_f["modifiedTime"] > master_f["modifiedTime"]
+    return bni25s.parse_drive_time(guest_f["modifiedTime"]) > bni25s.parse_drive_time(master_f["modifiedTime"])
 
 
-def fetch(svc, cfg: dict, work: Path, members_link: str) -> tuple[Path, Path, Path, Path | None]:
-    """抓最新主檔、上傳區根目錄的簡報、本週會員資料夾（啟動時給連結）、來賓名單（有更新才抓）。"""
-    master_f, date = pick_master(bni25s.list_folder(svc, cfg["slides25s_ppt_folder_id"]))
-    master = work / f"{date}.pptx"  # 存成 YYYYMMDD.pptx，挑上傳檔時要比日期
+STAMP_PREFIX = "BNI-ASSEMBLE fetched="
+STAMP_RE = re.compile(re.escape(STAMP_PREFIX) + r"([0-9T:.+\-Z]+)")
+
+
+def now_stamp() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def read_stamp(path: Path) -> str | None:
+    """成品檔案屬性裡的上次抓檔時間；沒有（手動組的、舊版程式組的）回傳 None。
+    直接讀 zip 裡的 docProps/core.xml，不必為了一個屬性把幾百 MB 的簡報整份打開。"""
+    with zipfile.ZipFile(path) as z:
+        if "docProps/core.xml" not in z.namelist():
+            return None
+        m = STAMP_RE.search(z.read("docProps/core.xml").decode("utf-8"))
+    return m.group(1) if m else None
+
+
+def is_same_week(master_date: str, today: date) -> bool:
+    """主檔檔名日期就是本次例會日（今天起最近的星期三）＝這週已經組過。"""
+    return master_date == f"{bni25s.meeting_wednesday(today):%Y%m%d}"
+
+
+def uploaded_at(f: dict) -> datetime:
+    """檔案最後一次進 Drive 的時間。從電腦上傳的檔，modifiedTime 是檔案在對方電腦上的修改時間，
+    可能比上傳時間早好幾天，所以和 createdTime 取較晚的。"""
+    return max(bni25s.parse_drive_time(f[k]) for k in ("createdTime", "modifiedTime") if f.get(k))
+
+
+def latest_by_name(files: list[dict]) -> tuple[list[dict], list[str]]:
+    """同名檔只留最後上傳的一份（重傳時 Drive 常會兩份並存）。回傳 (留下的檔, 有重複的檔名)。"""
+    best: dict[str, dict] = {}
+    dup = []
+    for f in files:
+        old = best.get(f["name"])
+        if old is not None and f["name"] not in dup:
+            dup.append(f["name"])
+        if old is None or uploaded_at(f) > uploaded_at(old):
+            best[f["name"]] = f
+    return list(best.values()), dup
+
+
+def newer_than(files: list[dict], cutoff: str | None) -> list[dict]:
+    """cutoff 之後才上傳的檔；cutoff 是 None＝不篩。"""
+    if cutoff is None:
+        return files
+    t = bni25s.parse_drive_time(cutoff)
+    return [f for f in files if uploaded_at(f) > t]
+
+
+def fetch(svc, cfg: dict, work: Path, members_link: str, today: date, since: str | None = None
+          ) -> tuple[Path, Path, Path, Path | None, bool]:
+    """抓最新主檔、上傳區根目錄的簡報、本週會員資料夾（啟動時給連結）、來賓名單（有更新才抓）。
+    主檔是本週已組過的＝補件：上傳區、會員資料夾、來賓名單都只抓上次抓檔之後才上傳的。
+    回傳 (主檔, 上傳區, 會員資料夾, 來賓名單或 None, 是不是補件)。"""
+    master_f, mdate = pick_master(bni25s.list_folder(svc, cfg["slides25s_ppt_folder_id"]))
+    master = work / f"{mdate}.pptx"  # 存成 YYYYMMDD.pptx，挑上傳檔時要比日期
     print(f"主檔：{master_f['name']}（Drive 修改時間 {master_f['modifiedTime'][:16]} UTC）")
     bni25s.download(svc, master_f, master)
+    patch = is_same_week(mdate, today)
+    cutoff = None
+    if patch:
+        stamped = read_stamp(master)
+        cutoff = since or stamped or master_f["modifiedTime"]
+        how = "--since 指定" if since else "成品記錄的上次抓檔時間" if stamped else "主檔的 Drive 修改時間（成品沒有記錄抓檔時間）"
+        print(f"🔁 同週補件：主檔日期 {mdate} 就是本週例會日 → 不輪替，只處理 {cutoff} 之後上傳的檔（{how}）")
+    elif since:
+        raise SystemExit(f"❌ --since 只能用在同週補件；主檔日期 {mdate} 不是本週例會日，這次是一般組裝")
 
     uploads_dir = work / "uploads"
     uploads_dir.mkdir()
     listed = bni25s.list_folder(svc, cfg["dismember_folder_id"])
-    ups = [f for f in listed if is_upload(f)]
+    ups, dup = latest_by_name([f for f in listed if is_upload(f)])
+    for name in dup:
+        print(f"上傳區：{name} 有同名檔，只用最後上傳的那一份")
+    ups = newer_than(ups, cutoff)
     for f in ups:
         ext = ".pdf" if f["mimeType"] == PDF_MIME else ".pptx"
         bni25s.download(svc, f, uploads_dir / (f["name"].removesuffix(ext) + ext))
@@ -972,19 +1081,22 @@ def fetch(svc, cfg: dict, work: Path, members_link: str) -> tuple[Path, Path, Pa
     members_dir.mkdir()
     mid = folder_id_from(members_link)
     mname = svc.files().get(fileId=mid, fields="name", supportsAllDrives=True).execute()["name"]
-    mfiles = [f for f in bni25s.list_folder(svc, mid) if is_deck(f)]
+    mfiles, mdup = latest_by_name([f for f in bni25s.list_folder(svc, mid) if is_deck(f)])
+    if mdup:
+        print(f"會員資料夾：{len(mdup)} 個檔名有同名檔，各只用最後上傳的那一份")
+    mfiles = newer_than(mfiles, cutoff)
     for f in mfiles:
         bni25s.download(svc, f, members_dir / (f["name"].removesuffix(".pptx") + ".pptx"))
     print(f"會員資料夾：{mname}（{len(mfiles)} 份）")
 
-    gf = svc.files().get(fileId=cfg["guest_slides_file_id"], fields="id, mimeType, modifiedTime",
+    gf = svc.files().get(fileId=cfg["guest_slides_file_id"], fields="id, mimeType, modifiedTime, createdTime",
                          supportsAllDrives=True).execute()
     guest = None
-    if guest_is_new(gf, master_f):
+    if newer_than([gf], cutoff) if patch else guest_is_new(gf, master_f):
         guest = work / "guest.pptx"
         bni25s.download(svc, gf, guest)
-    print(f"來賓名單：Drive 修改時間 {gf['modifiedTime'][:16]} UTC → {'有更新，會換' if guest else '沒比主檔新，不換'}")
-    return master, uploads_dir, members_dir, guest
+    print(f"來賓名單：Drive 修改時間 {gf['modifiedTime'][:16]} UTC → {'有更新，會換' if guest else '沒有新的更新，不換'}")
+    return master, uploads_dir, members_dir, guest, patch
 
 
 def cmd_dry_run(args) -> int:
@@ -992,13 +1104,16 @@ def cmd_dry_run(args) -> int:
     work = Path(args.work)
     work.mkdir(parents=True, exist_ok=False)
     svc = bni25s.get_drive_service()
-    master, uploads_dir, members_dir, guest = fetch(svc, cfg, work, args.members)
-    return run_local(master, uploads_dir, members_dir, guest, work / "assembled.pptx", work / "report.txt")
+    today = date.fromisoformat(args.today) if args.today else datetime.now(ZoneInfo(cfg["timezone"])).date()
+    stamp = now_stamp()  # 列檔之前就記時間：列檔之後才上傳的檔，下次補件要抓得到
+    master, uploads_dir, members_dir, guest, patch = fetch(svc, cfg, work, args.members, today, args.since)
+    return run_local(master, uploads_dir, members_dir, guest, work / "assembled.pptx", work / "report.txt",
+                     patch=patch, stamp=stamp)
 
 
 def cmd_local(args) -> int:
     return run_local(Path(args.master), Path(args.uploads), Path(args.members) if args.members else None,
-                     Path(args.guest) if args.guest else None, Path(args.out), Path(args.report))
+                     Path(args.guest) if args.guest else None, Path(args.out), Path(args.report), patch=args.patch)
 
 
 def main() -> None:
@@ -1007,12 +1122,16 @@ def main() -> None:
     dr = sub.add_parser("dry-run", help="從 Drive 抓最新檔案組裝，成品只存本機")
     dr.add_argument("--work", required=True, help="工作資料夾（必須是新的）")
     dr.add_argument("--members", required=True, help="本週會員個人檔的 Drive 資料夾連結（每週不同）")
+    dr.add_argument("--since", help="同週補件時：只處理這個時間（UTC，如 2026-11-10T12:00:00Z）之後上傳的檔")
+    dr.add_argument("--today", help="指定今天日期 YYYY-MM-DD（測試用）")
     dr.set_defaults(func=cmd_dry_run)
     lo = sub.add_parser("local", help="完全離線：本機檔案組裝")
     lo.add_argument("--master", required=True)
     lo.add_argument("--uploads", required=True, help="職務檔／組別檔所在資料夾")
     lo.add_argument("--members", help="會員個人檔所在資料夾")
     lo.add_argument("--guest", help="來賓名單投影片；不給＝來賓章節沿用主檔")
+    lo.add_argument("--patch", action="store_true",
+                    help="同週補件：主檔是本週已組過的，不輪替；--uploads／--members 只放這次要補的檔")
     lo.add_argument("--out", required=True)
     lo.add_argument("--report", required=True)
     lo.set_defaults(func=cmd_local)

@@ -168,6 +168,15 @@ class SelectUploadsTest(unittest.TestCase):
         got, _ = self.pick(["三分鐘20261021.pptx", "3分鐘20261028.pptx"], master="m.pptx")
         self.assertEqual(got, ["3分鐘20261028.pptx"])
 
+    def test_same_week_keeps_files_dated_as_master(self):
+        names = ["秘財20261021.pptx", "秘財1151028.pptx", "三分鐘20261028.pptx"]
+        got, _ = self.pick(names, master="20261028.pptx")
+        self.assertEqual(got, [])  # 一般組裝：和主檔同一天＝已組過
+        rep = assemble.Report()
+        got = assemble.select_uploads([Path(n) for n in names], Path("20261028.pptx"), rep, same_week=True)
+        self.assertEqual([p.name for p in got], ["三分鐘20261028.pptx", "秘財1151028.pptx"])
+        self.assertTrue(any("秘財20261021.pptx" in line and "早於" in line for line in rep.lines))
+
     def test_undated_and_same_day_reported(self):
         got, rep = self.pick(["活動組.pptx", "副主席20261028.pptx", "20261028副主席.pptx"])
         self.assertEqual(got, [])
@@ -190,6 +199,32 @@ class DriveHelpersTest(unittest.TestCase):
         self.assertEqual((f["name"], date), ("20261028.pptx", "20261028"))
         files[1]["modifiedTime"] = "2026-10-28T01:00:00Z"
         self.assertEqual(assemble.pick_master(files)[0]["name"], "20261028_秘財更新.pptx")
+
+    def test_is_same_week(self):
+        from datetime import date
+        self.assertTrue(assemble.is_same_week("20261111", date(2026, 11, 10)))   # 週二，本週三的檔已經在了
+        self.assertTrue(assemble.is_same_week("20261111", date(2026, 11, 11)))   # 例會當天
+        self.assertFalse(assemble.is_same_week("20261104", date(2026, 11, 10)))  # 上週的檔＝一般組裝
+        self.assertFalse(assemble.is_same_week("20261111", date(2026, 11, 12)))  # 開完會，下一次是下週
+
+    def test_uploaded_at_uses_later_of_created_and_modified(self):
+        # 從電腦上傳：modifiedTime 是對方電腦上的修改時間，比上傳時間早
+        f = {"name": "a.pptx", "createdTime": "2026-11-09T04:40:02.396Z", "modifiedTime": "2026-11-03T07:18:03Z"}
+        self.assertEqual(assemble.newer_than([f], "2026-11-08T00:00:00Z"), [f])
+        self.assertEqual(assemble.newer_than([f], "2026-11-09T05:00:00Z"), [])
+        self.assertEqual(assemble.newer_than([f], None), [f])
+        # 同一秒內，有沒有毫秒都要比對
+        g = {"name": "b.pptx", "modifiedTime": "2026-11-10T13:21:25.643Z"}
+        self.assertEqual(assemble.newer_than([g], "2026-11-10T13:21:25Z"), [g])
+
+    def test_latest_by_name_keeps_last_upload(self):
+        old = {"name": "秘財.pptx", "createdTime": "2026-11-10T07:38:00Z", "modifiedTime": "2026-11-10T07:38:00Z", "id": "old"}
+        new = {"name": "秘財.pptx", "createdTime": "2026-11-10T14:00:00Z", "modifiedTime": "2026-11-10T09:00:00Z", "id": "new"}
+        other = {"name": "活動組.pptx", "modifiedTime": "2026-11-10T01:00:00Z", "id": "x"}
+        for order in ([old, new, other], [new, old, other]):
+            kept, dup = assemble.latest_by_name(order)
+            self.assertEqual(sorted(f["id"] for f in kept), ["new", "x"])
+            self.assertEqual(dup, ["秘財.pptx"])
 
     def test_pick_master_none(self):
         with self.assertRaises(SystemExit):
@@ -332,6 +367,27 @@ class RoleTest(Case):
               self.up / "秘財20261104.pptx")
         _, _, prs = self.run_assemble()
         self.assertEqual(first_lines(prs)["新會員/續約會員"], ["新會員A"])
+
+    def test_empty_upload_reported_and_others_still_applied(self):
+        (self.up / "秘財20261028.pptx").write_bytes(b"")
+        build([("教育培訓時間-3分鐘教育", [S("新三分鐘")])], self.up / "三分鐘20261028.pptx")
+        _, rep, prs = self.run_assemble()
+        self.assertTrue(any("秘財20261028.pptx" in p and "0 bytes" in p for p in rep.problems))
+        self.assertIn("新三分鐘", first_lines(prs)["教育培訓時間-3分鐘教育"])
+
+    def test_corrupt_upload_reported(self):
+        (self.up / "秘財20261028.pptx").write_bytes(b"not a zip")
+        _, rep, _ = self.run_assemble()
+        self.assertTrue(any("秘財20261028.pptx" in p and "打不開" in p for p in rep.problems))
+
+    def test_roles_and_groups_without_new_file_listed(self):
+        build([("教育培訓時間-3分鐘教育", [S("新三分鐘")])], self.up / "三分鐘20261028.pptx")
+        build([("x", [S("乙組 請上台"), S("乙組 組長：簡 新總覽", "206 簡均安")])],
+              self.mem / "25秒-乙組20261028.pptx", sections=False)
+        deck, rep, prs = self.run_assemble()
+        self.assertEqual(rep.unchanged, ["副主席", "秘財", "活動組", "甲組", "丙組"])
+        self.assertIn("副主席、秘財、活動組、甲組、丙組", assemble.render_report(deck, rep, self.tmp / "out.pptx"))
+        self.assertFalse(any("副主席" in p for p in rep.problems))  # 沒交是附註，不是問題
 
     def test_notes_carried(self):
         build([("副主席報告", [S("副主席報告"), S("新內容", notes="備註要照抄")])], self.up / "副主席20261028.pptx")
@@ -518,6 +574,20 @@ class MemberFolderGroupTest(Case):
         got.save(str(out))  # 再存一次再開，仍是同一頁
         self.assertEqual([assemble.slide_text(s) for s in Presentation(str(out)).slides], ["個人頁"])
 
+    def test_renamed_group_not_matched_to_next_group(self):
+        # 組長把組名改了（主檔沒有「戊組」），請上台頁的 NEXT 寫著下一組「甲組」→ 不能換到甲組
+        build([("x", [S("NOW 戊組 請上台 NEXT 甲組 請準備"), S("戊組 介紹")])], self.mem / "x.pptx", sections=False)
+        before = first_lines(Presentation(str(self.master)))["25秒簡報-甲組"]
+        _, rep, prs = self.run_assemble()
+        self.assertTrue(any("「戊組」對不到主檔的組別" in p for p in rep.problems))
+        self.assertCountEqual(first_lines(prs)["25秒簡報-甲組"], before)
+
+    def test_group_name_read_between_now_and_stage(self):
+        # NOW 前面的字（頁首、上一組）不算；只看 NOW 到「請上台」之間
+        build([("x", [S("甲組 回顧 NOW 乙組 請上台 NEXT 丙組"), S("乙組 新介紹")])], self.mem / "x.pptx", sections=False)
+        _, rep, prs = self.run_assemble()
+        self.assertEqual(first_lines(prs)["25秒簡報-乙組"][:2], ["乙組 請上台", "乙組 新介紹"])
+
     def test_unknown_group_reported(self):
         build([("x", [S("NOW 戊組 請上台"), S("戊組 介紹")])], self.mem / "x.pptx", sections=False)
         _, rep, _ = self.run_assemble()
@@ -559,6 +629,50 @@ class GuestTest(Case):
     def test_empty_guest_list_hides_all(self):
         _, _, prs = self.run_assemble(guest_deck(self.tmp / "g0.pptx"))
         self.assertEqual(self.hidden(prs), ["來賓介紹", "許願池", "來賓1", "來賓感想頁"])
+
+
+class PatchTest(Case):
+    """同週補件：主檔已經是本週組過的，重跑不能再輪替，也不能動沒重傳的部分。"""
+
+    def test_patch_does_not_rotate_and_only_changes_reuploaded(self):
+        first = self.tmp / "20261028.pptx"
+        build([("教育培訓時間-3分鐘教育", [S("第一版三分鐘")])], self.up / "三分鐘20261028.pptx")
+        assemble.assemble(self.master, sorted(self.up.iterdir()), [], self.guest, first, stamp="2026-10-27T12:00:00Z")
+        order = [n for n in first_lines(Presentation(str(first))) if n.startswith("25秒簡報-")]
+        self.assertEqual(order, ["25秒簡報-乙組", "25秒簡報-丙組", "25秒簡報-甲組"])  # 第一次：輪替一次
+
+        up2 = self.tmp / "up2"
+        up2.mkdir()
+        build([("秘書財務報告", [S("重傳的財務")]), ("5分鐘主題專講(秘財)", [S("重傳的專講")]),
+               ("新會員/續約會員", [S("重傳的新會員")])], up2 / "秘財20261028.pptx")
+        out = self.tmp / "patched.pptx"
+        deck, rep = assemble.assemble(first, sorted(up2.iterdir()), [], None, out, patch=True)
+        got = first_lines(Presentation(str(out)))
+        self.assertEqual([n for n in got if n.startswith("25秒簡報-")], order)  # 沒有再輪替
+        self.assertIn("重傳的財務", got["秘書財務報告"])
+        self.assertIn("第一版三分鐘", got["教育培訓時間-3分鐘教育"])  # 沒重傳的不動
+        text = assemble.render_report(deck, rep, out)
+        self.assertIn("同週補件", text)
+        self.assertNotIn("本週沒交新檔", text)
+
+    def test_patch_without_new_guest_leaves_guest_sections_shown(self):
+        first = self.tmp / "20261028.pptx"
+        assemble.assemble(self.master, [], [], self.guest, first)
+        out = self.tmp / "patched.pptx"
+        assemble.assemble(first, [], [], None, out, patch=True)
+        prs = Presentation(str(out))
+        hidden = [assemble.slide_text(s).split("\n")[0] for s in prs.slides if s._element.get("show") == "0"]
+        self.assertEqual([h for h in hidden if h != "續約宣示"], [])  # 來賓章節維持顯示
+        self.assertIn("陳庭儀", "".join(assemble.slide_text(s) for s in prs.slides))
+
+    def test_stamp_written_and_read_back(self):
+        out = self.tmp / "out.pptx"
+        self.assertIsNone(assemble.read_stamp(self.master))
+        assemble.assemble(self.master, [], [], self.guest, out, stamp="2026-11-10T12:00:00Z")
+        self.assertEqual(assemble.read_stamp(out), "2026-11-10T12:00:00Z")
+        again = self.tmp / "again.pptx"
+        assemble.assemble(out, [], [], None, again, patch=True)  # 本機補件沒給新時間 → 沿用原本的記錄
+        self.assertEqual(assemble.read_stamp(again), "2026-11-10T12:00:00Z")
 
 
 class RotateTest(Case):
